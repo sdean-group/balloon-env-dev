@@ -211,22 +211,26 @@ def test_divergence_free_streamfunction(case: dict):
 
 
 def test_zero_noise_is_deterministic_for_sample_and_pmf():
-    """With zero noise, sample and PMF collapse to clipped+rounded mean."""
+    """With zero noise, sample collapses to the clipped continuous mean and the
+    PMF collapses to a one-hot at the rounded mean (DP discretization)."""
     config = GridConfig.create(n_x=3, n_y=3)
     field = RFFGPField(config, d_max=2, sigma=1.0, lengthscale=1.0, nu=2.5, num_features=128, noise_std=0.0)
     field.reset(jax.random.PRNGKey(42))
 
-    # Choose a mean whose clipped+rounded value is deterministic and non-boundary.
-    mu = 1.3
-    field._precomputed_u = field._precomputed_u.at[1, 1].set(mu)
     pos = GridPosition(2, 2, None)
-    expected_displacement = int(round(np.clip(mu, -field.d_max, field.d_max)))
+    # The mean is whatever the GP realisation gives at this point (no forcing of
+    # _precomputed_u, since sampling now evaluates the GP continuously).
+    mu = field.get_mean_displacement(pos)[0]
+    clipped = float(np.clip(mu, -field.d_max, field.d_max))
+    expected_displacement = int(round(clipped))
 
+    # Sample is the continuous clipped mean (no rounding in the field).
     sample = field.sample_displacement(pos, jax.random.PRNGKey(7))
-    assert sample.u == pytest.approx(float(np.clip(mu, -field.d_max, field.d_max)), abs=1e-7)
+    assert sample.u == pytest.approx(clipped, abs=1e-6)
     assert sample.u_int == expected_displacement
 
+    # PMF discretizes to disp_levels integer bins, one-hot at the rounded mean.
     pmf = field.get_displacement_pmf(pos)
-    assert pmf.shape == (2 * field.d_max + 1,)
+    assert pmf.shape == (2 * field.disp_levels + 1,)
     assert np.count_nonzero(pmf) == 1
-    assert pmf[expected_displacement + field.d_max] == pytest.approx(1.0, abs=1e-7)
+    assert pmf[expected_displacement + field.disp_levels] == pytest.approx(1.0, abs=1e-7)

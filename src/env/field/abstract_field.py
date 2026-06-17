@@ -1,5 +1,6 @@
 """Abstract field interface for environmental dynamics on ambient axes."""
 
+import math
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 import numpy as np
@@ -10,40 +11,52 @@ from ..utils.types import GridPosition, DisplacementObservation, GridConfig
 
 class AbstractField(ABC):
     """Abstract base class for environmental fields.
-    
+
     Fields represent environmental forces that produce displacements on ambient axes.
     Supports both 2D (1 ambient axis) and 3D (2 ambient axes) settings.
-    Can support both discrete and continuous displacement observations.
+    Displacements are continuous floats; ``disp_levels`` gives the integer
+    discretization resolution used only for analytical PMFs (e.g. the DP oracle).
     """
-    
-    def __init__(self, config: GridConfig, d_max: int):
+
+    def __init__(self, config: GridConfig, d_max: float, *, disp_levels: Optional[int] = None):
         """Initialize field with configuration.
-        
+
         Args:
             config: Grid configuration specifying grid dimensions.
-            d_max: Maximum displacement magnitude on ambient axes.
+            d_max: Maximum displacement magnitude on ambient axes (continuous).
                    Displacements are clipped to [-d_max, d_max].
+            disp_levels: Integer displacement resolution for PMF analysis.
+                   PMFs span integer offsets {-disp_levels, ..., +disp_levels}.
+                   Defaults to ceil(d_max). Not used by the live dynamics.
         """
         self.config = config
-        self._d_max = int(d_max)
-        
-        # Validate d_max type and value
-        if d_max != int(d_max):
-            raise ValueError(f"d_max must be an integer, got {d_max}")
-        if d_max < 0:
+        self._d_max = float(d_max)
+
+        # Validate d_max value
+        if self._d_max < 0:
             raise ValueError("d_max must be non-negative")
         if self.ndim == 3:
-            if d_max >= min(config.n_x, config.n_y):
+            if self._d_max >= min(config.n_x, config.n_y):
                 raise ValueError("d_max must be smaller than ambient dimensions")
         else:
-            if d_max >= config.n_x:
+            if self._d_max >= config.n_x:
                 raise ValueError("d_max must be smaller than ambient dimension")
-    
+
+        # Integer resolution for analytical PMFs (DP oracle); not used at runtime.
+        self._disp_levels = int(math.ceil(self._d_max)) if disp_levels is None else int(disp_levels)
+        if self._disp_levels < 0:
+            raise ValueError("disp_levels must be non-negative")
+
     @property
-    def d_max(self) -> int:
+    def d_max(self) -> float:
         """Maximum displacement magnitude on ambient axes."""
         return self._d_max
-    
+
+    @property
+    def disp_levels(self) -> int:
+        """Integer displacement resolution used for analytical PMFs."""
+        return self._disp_levels
+
     @property
     def ndim(self) -> int:
         """Number of spatial dimensions (2 or 3)."""
@@ -84,9 +97,9 @@ class AbstractField(ABC):
             position: Grid position to query.
 
         Returns:
-            PMF array or None if not available.
-            - 3D: shape (2*d_max+1, 2*d_max+1), entry [i,j] = P(u=i-d_max, v=j-d_max)
-            - 2D: shape (2*d_max+1,), entry [i] = P(u=i-d_max)
+            PMF array or None if not available. (L = disp_levels)
+            - 3D: shape (2*L+1, 2*L+1), entry [i,j] = P(u=i-L, v=j-L)
+            - 2D: shape (2*L+1,), entry [i] = P(u=i-L)
         """
         return None
 
@@ -94,9 +107,9 @@ class AbstractField(ABC):
         """Get displacement PMF for every cell in the grid (vectorized).
 
         Returns:
-            JAX array or None if not available.
-            - 2D: shape (n_x, n_y, 2*d_max+1)
-            - 3D: shape (n_x, n_y, n_z, 2*d_max+1, 2*d_max+1)
+            JAX array or None if not available. (L = disp_levels)
+            - 2D: shape (n_x, n_y, 2*L+1)
+            - 3D: shape (n_x, n_y, n_z, 2*L+1, 2*L+1)
         """
         return None
     
