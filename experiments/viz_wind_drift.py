@@ -35,7 +35,7 @@ from src.env import (
     GridConfig,
     GridPosition,
 )
-from src.env.field import RFFGPField
+from src.env.field import SyntheticFlowField
 
 STAY = 1  # action 1 = do nothing on the controllable axis
 
@@ -46,14 +46,12 @@ def main() -> None:
     # GP wind field: smooth, clearly non-zero mean so the drift is visible.
     # Low noise_std so the motion is dominated by the (fixed-per-episode) field
     # rather than observation jitter -- makes the drift easy to read.
-    field = RFFGPField(
+    field = SyntheticFlowField(
         config,
-        d_max=4.0,          # continuous clip bound on displacement per step
         sigma=3.0,          # wind amplitude
         lengthscale=20.0,   # large => smooth, slowly-varying wind
         nu=2.5,
         num_features=400,
-        noise_std=0.2,
     )
 
     # Actor with NO noise: with action=STAY the agent truly does nothing,
@@ -68,10 +66,12 @@ def main() -> None:
     )
 
     arena = NavigationArena(
-        field=field, actor=actor, config=config,
+        realized_field=field, observed_field=field, actor=actor, config=config,
         initial_position=start, target_position=target,
-        vicinity_radius=10.0, boundary_mode="clip", reward_fn=reward_fn,
+        vicinity_radius=10.0, max_displacement=4.0,  # continuous clip bound per step
+        boundary_mode="clip", reward_fn=reward_fn,
         terminate_on_reach=False,
+        process_noise_std=0.2, obs_noise_std=0.2,
     )
 
     renderer = NavigationRenderer(

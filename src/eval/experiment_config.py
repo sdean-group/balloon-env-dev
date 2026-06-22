@@ -27,7 +27,7 @@ from ..env import (
     GridConfig,
     GridPosition,
 )
-from ..env.field import RFFGPField  # not re-exported from env.__init__
+from ..env.field import SyntheticFlowField  # not re-exported from env.__init__
 from ..agents import (
     Agent,
     AgentConfig,
@@ -82,12 +82,17 @@ def build_env(
     Expected keys under ``cfg["env"]``::
 
         grid:     {n_x, n_y, n_z (optional)}
-        field:    {d_max, sigma, lengthscale, nu, num_features, noise_std}
+        field:    {max_displacement, sigma, lengthscale, nu, num_features,
+                   process_noise_std (optional), obs_noise_std (optional)}
         actor:    {scale, noise_std, z_max}
         arena:    {initial_position, target_position, vicinity_radius,
                    boundary_mode, terminate_on_reach}
         reward:   {peak_reward, step_cost, proximity_scale}
         horizon:  int
+
+    The synthetic field is shared as both the realized (W) and observed (W_hat)
+    wind -- a perfect-forecast baseline. Build a structured forecast error in code
+    (``realized = observed + error``) for imperfect-forecast experiments.
     """
     e = cfg["env"]
 
@@ -95,9 +100,18 @@ def build_env(
     gc = e["grid"]
     grid_config = GridConfig.create(gc["n_x"], gc["n_y"], gc.get("n_z"))
 
-    # Field
-    fc = e["field"]
-    field = RFFGPField(grid_config, **fc)
+    # Field. Dynamics knobs (max_displacement, per-step noise) live on the arena;
+    # accept legacy `d_max`/`noise_std` keys for backward compatibility.
+    fc = dict(e["field"])
+    max_displacement = fc.pop("max_displacement", fc.pop("d_max", None))
+    if max_displacement is None:
+        raise KeyError("env.field must specify 'max_displacement' (or legacy 'd_max')")
+    legacy_noise = fc.pop("noise_std", 0.0)
+    process_noise_std = fc.pop("process_noise_std", legacy_noise)
+    obs_noise_std = fc.pop("obs_noise_std", legacy_noise)
+    fc.pop("disp_levels", None)  # deleted; ignore if present in old configs
+
+    field = SyntheticFlowField(grid_config, **fc)
 
     # Actor
     actor = GridActor(**e["actor"])
@@ -112,18 +126,22 @@ def build_env(
         **rc,
     )
 
-    # Arena
+    # Arena. Share the one field as both realized and observed (perfect forecast).
     initial = _parse_position(ac["initial_position"], grid_config.ndim)
     arena = NavigationArena(
-        field=field,
+        realized_field=field,
+        observed_field=field,
         actor=actor,
         config=grid_config,
         initial_position=initial,
         target_position=target,
         vicinity_radius=ac["vicinity_radius"],
+        max_displacement=max_displacement,
         boundary_mode=ac.get("boundary_mode", "terminal"),
         reward_fn=reward_fn,
         terminate_on_reach=ac.get("terminate_on_reach", False),
+        process_noise_std=process_noise_std,
+        obs_noise_std=obs_noise_std,
     )
 
     horizon = e.get("horizon", 100)

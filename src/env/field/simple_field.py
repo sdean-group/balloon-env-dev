@@ -1,106 +1,113 @@
-"""Simple field implementation with uniform random displacements on ambient axes."""
+"""Simple constant / uniform-drift flow fields.
+
+These replace the old ``SimpleField``, which sampled a fresh uniform displacement on
+*every* call -- that was per-step noise, not a field, and violated "deterministic
+after reset()". Both fields here are proper :class:`FlowField` sources: spatially
+uniform and fixed after ``reset()``.
+
+- ``ConstantDriftField`` -- a fixed drift vector supplied at construction.
+- ``UniformDriftField`` -- one random drift vector drawn (uniformly) at ``reset()``.
+"""
+
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import jax
 import jax.numpy as jnp
-from typing import Optional, Tuple
 
-from .abstract_field import AbstractField
-from ..utils.types import GridPosition, DisplacementObservation, GridConfig
+from .flow_field import FlowField
+from ..utils.types import GridPosition, GridConfig
 
 
-class SimpleField(AbstractField):
-    """Simple field with uniform random displacements (continuous).
+class ConstantDriftField(FlowField):
+    """Spatially uniform, constant velocity field.
 
-    Supports both 2D and 3D settings:
-    - 3D: Samples (u, v) uniformly from [-d_max, +d_max]^2
-    - 2D: Samples (u,) uniformly from [-d_max, +d_max]
-
-    This is a stateless field - displacements are sampled independently
-    on each call, so reset() is a no-op.
+    Returns the same drift vector everywhere, fixed for all time. ``reset`` is a
+    no-op (the drift is deterministic).
     """
 
-    def __init__(self, config: GridConfig, d_max: float, *, disp_levels=None):
-        """Initialize simple field.
+    def __init__(self, config: GridConfig, drift: Sequence[float]):
+        """Initialize the constant-drift field.
 
         Args:
             config: Grid configuration.
-            d_max: Maximum displacement magnitude on ambient axes (continuous).
-            disp_levels: Integer displacement resolution for analytical PMFs.
+            drift: Velocity vector. Length 1 for 2D ((u,)) or 2 for 3D ((u, v)).
         """
-        super().__init__(config, d_max, disp_levels=disp_levels)
-    
+        super().__init__(config)
+        expected = 1 if self.ndim == 2 else 2
+        if len(drift) != expected:
+            raise ValueError(
+                f"drift must have length {expected} for {self.ndim}D, got {len(drift)}"
+            )
+        self._u = float(drift[0])
+        self._v = float(drift[1]) if self.ndim == 3 else None
+
     def reset(self, rng_key: jnp.ndarray) -> None:
-        """Reset field (no-op for stateless simple field).
-        
-        Args:
-            rng_key: RNG key (unused - displacements sampled fresh each time).
-        """
-        # No state to reset - each sample_displacement call is independent
         pass
-    
-    def sample_displacement(
-        self, position: GridPosition, rng_key: jnp.ndarray
-    ) -> DisplacementObservation:
-        """Sample uniform random displacement on ambient axes (continuous).
+
+    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
+        return (self._u, self._v)
+
+    def velocity_field(self) -> np.ndarray:
+        if self.ndim == 3:
+            field = np.empty((self.config.n_x, self.config.n_y, self.config.n_z, 2))
+            field[..., 0] = self._u
+            field[..., 1] = self._v
+            return field
+        field = np.empty((self.config.n_x, self.config.n_y, 1))
+        field[..., 0] = self._u
+        return field
+
+
+class UniformDriftField(FlowField):
+    """Spatially uniform field whose drift is drawn uniformly once per episode.
+
+    At ``reset()`` a single drift vector is sampled from ``[-max_drift, max_drift]``
+    per component and held fixed for the episode.
+    """
+
+    def __init__(self, config: GridConfig, max_drift: float = 1.0):
+        """Initialize the uniform-drift field.
 
         Args:
-            position: Current grid position (unused in this simple field).
-            rng_key: JAX PRNG key for sampling.
-
-        Returns:
-            Displacement observation:
-            - 3D: (u, v) both sampled uniformly from [-d_max, d_max]
-            - 2D: (u, None) only first ambient axis
+            config: Grid configuration.
+            max_drift: Magnitude bound; each drift component ~ U[-max_drift, max_drift].
         """
-        d_max = self.d_max
+        super().__init__(config)
+        if max_drift < 0.0:
+            raise ValueError(f"max_drift must be non-negative, got {max_drift}")
+        self.max_drift = float(max_drift)
+        self._u: Optional[float] = None
+        self._v: Optional[float] = None
 
+    def reset(self, rng_key: jnp.ndarray) -> None:
         if self.ndim == 3:
-            # 3D: sample both u and v
             key_u, key_v = jax.random.split(rng_key)
-            u = jax.random.uniform(key_u, shape=(), minval=-d_max, maxval=d_max)
-            v = jax.random.uniform(key_v, shape=(), minval=-d_max, maxval=d_max)
-            return DisplacementObservation(float(u), float(v))
+            self._u = float(
+                jax.random.uniform(key_u, minval=-self.max_drift, maxval=self.max_drift)
+            )
+            self._v = float(
+                jax.random.uniform(key_v, minval=-self.max_drift, maxval=self.max_drift)
+            )
         else:
-            # 2D: sample only u
-            u = jax.random.uniform(rng_key, shape=(), minval=-d_max, maxval=d_max)
-            return DisplacementObservation(float(u), None)
+            self._u = float(
+                jax.random.uniform(rng_key, minval=-self.max_drift, maxval=self.max_drift)
+            )
+            self._v = None
 
-    def get_displacement_pmf(self, position: GridPosition) -> np.ndarray:
-        """Return uniform PMF over the discretized displacement space.
+    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
+        if self._u is None:
+            raise RuntimeError("UniformDriftField.reset() must be called before velocity_at()")
+        return (self._u, self._v)
 
-        Returns: (L = disp_levels)
-            - 3D: Array of shape (2*L+1, 2*L+1) with uniform probabilities
-            - 2D: Array of shape (2*L+1,) with uniform probabilities
-        """
-        size = 2 * self.disp_levels + 1
-
+    def velocity_field(self) -> np.ndarray:
+        if self._u is None:
+            raise RuntimeError("UniformDriftField.reset() must be called before velocity_field()")
         if self.ndim == 3:
-            return np.ones((size, size), dtype=np.float32) / (size ** 2)
-        else:
-            return np.ones((size,), dtype=np.float32) / size
-
-    def get_displacement_pmf_grid(self) -> jnp.ndarray:
-        """Uniform PMF broadcast over the entire grid."""
-        size = 2 * self.disp_levels + 1
-        if self.ndim == 2:
-            return jnp.full((*self.config.shape, size), 1.0 / size)
-        else:
-            return jnp.full((*self.config.shape, size, size), 1.0 / (size * size))
-    
-    def get_mean_displacement(self, position: GridPosition) -> Tuple[float, ...]:
-        """Return mean displacement (zero for uniform distribution).
-        
-        For uniform distribution over {-d_max, ..., +d_max}, mean is 0.
-        
-        Args:
-            position: Grid position (unused - field is spatially uniform).
-            
-        Returns:
-            - 3D: (0.0, 0.0) tuple
-            - 2D: (0.0,) tuple
-        """
-        if self.ndim == 3:
-            return (0.0, 0.0)
-        else:
-            return (0.0,)
+            field = np.empty((self.config.n_x, self.config.n_y, self.config.n_z, 2))
+            field[..., 0] = self._u
+            field[..., 1] = self._v
+            return field
+        field = np.empty((self.config.n_x, self.config.n_y, 1))
+        field[..., 0] = self._u
+        return field

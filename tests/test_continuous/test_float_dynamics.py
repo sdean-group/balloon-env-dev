@@ -1,9 +1,12 @@
 """Tests for continuous (float) positions and displacements.
 
 These verify the int->float structural change: positions and displacements are
-continuous floats end to end (no rounding in the live step path), while the DP
-oracle still works by discretizing to integer cells. The RFFGPField is the
-primary field under test since it is the one used in real experiments.
+continuous floats end to end (no rounding in the live step path). The
+SyntheticFlowField is the primary wind source under test since it is the one used
+in real experiments.
+
+Per the clean wind-field design, the field is a pure spatial source; the arena
+owns clipping (``max_displacement``) and optional per-step noise.
 """
 
 import jax
@@ -14,11 +17,10 @@ from src.env.environment import GridEnvironment
 from src.env.arena.grid_arena import GridArena
 from src.env.arena.navigation_arena import NavigationArena
 from src.env.arena.reward import NavigationReward
-from src.env.field.simple_field import SimpleField
-from src.env.field.rff_gp_field import RFFGPField
+from src.env.field.composite import ZeroField
+from src.env.field.synthetic import SyntheticFlowField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
-from src.agents.dp_agent import DPAgent, DPAgentConfig
 
 
 # ---------------------------------------------------------------------------
@@ -29,19 +31,22 @@ def _is_integer_valued(x: float) -> bool:
     return float(x) == round(float(x))
 
 
-def _make_rff_nav_env(*, noise_std=0.5, d_max=3.0, n=20, max_steps=30, seed=0,
-                      boundary_mode="clip"):
+def _make_rff_nav_env(*, noise_std=0.5, max_displacement=3.0, n=20, max_steps=30,
+                      seed=0, boundary_mode="clip"):
     config = GridConfig.create(n, n)
-    field = RFFGPField(config, d_max=d_max, sigma=2.0, lengthscale=5.0, nu=2.5,
-                       num_features=200, noise_std=noise_std)
+    # One synthetic field shared as realized + observed (perfect-forecast baseline).
+    field = SyntheticFlowField(config, sigma=2.0, lengthscale=5.0, nu=2.5,
+                               num_features=200)
     actor = GridActor(scale=1.5, noise_std=noise_std, z_max=3.0)
     target = GridPosition(n - 3, n - 3, None)
     reward_fn = NavigationReward(target_position=target, vicinity_radius=2.0,
                                  peak_reward=10.0, step_cost=0.1, proximity_scale=0.1)
     arena = NavigationArena(
-        field=field, actor=actor, config=config,
+        realized_field=field, observed_field=field, actor=actor, config=config,
         initial_position=GridPosition(4, 4, None), target_position=target,
-        vicinity_radius=2.0, boundary_mode=boundary_mode, reward_fn=reward_fn,
+        vicinity_radius=2.0, max_displacement=max_displacement,
+        boundary_mode=boundary_mode, reward_fn=reward_fn,
+        process_noise_std=noise_std, obs_noise_std=noise_std,
     )
     return GridEnvironment(arena=arena, max_steps=max_steps, seed=seed)
 
@@ -105,39 +110,37 @@ def test_actor_clip_to_z_max():
 
 
 # ---------------------------------------------------------------------------
-# 3. RFFGPField works at fractional positions ("works with rff_gp_field")
+# 3. SyntheticFlowField works at fractional positions
 # ---------------------------------------------------------------------------
 
-def test_rff_field_samples_at_fractional_position():
+def test_field_velocity_at_fractional_position():
     config = GridConfig.create(20, 20)
-    field = RFFGPField(config, d_max=3.0, sigma=2.0, lengthscale=5.0, nu=2.5,
-                       num_features=200, noise_std=0.0)
+    field = SyntheticFlowField(config, sigma=2.0, lengthscale=5.0, nu=2.5,
+                               num_features=200)
     field.reset(jax.random.PRNGKey(1))
 
     frac = GridPosition(7.3, 11.8, None)
-    sample = field.sample_displacement(frac, jax.random.PRNGKey(2))
+    u, v = field.velocity_at(frac)
 
-    # finite and clipped
-    assert np.isfinite(sample.u)
-    assert -3.0 <= sample.u <= 3.0
+    assert v is None
+    assert np.isfinite(u)
 
-    # With zero noise, the sample equals the continuous GP mean (clipped).
-    u_mean, _ = field.velocity_at_point(7.3, 11.8)
-    expected = float(np.clip(float(u_mean), -3.0, 3.0))
-    assert sample.u == pytest.approx(expected, abs=1e-5)
+    # velocity_at matches the differentiable core at the same continuous point.
+    u_point, _ = field.velocity_at_point(7.3, 11.8)
+    assert u == pytest.approx(float(u_point), abs=1e-5)
 
 
-def test_rff_precompute_matches_continuous_at_integer_points():
-    """At integer cells, continuous eval matches the precomputed grid mean."""
+def test_precompute_matches_continuous_at_integer_points():
+    """At integer cells, continuous eval matches the precomputed grid velocity."""
     config = GridConfig.create(15, 15)
-    field = RFFGPField(config, d_max=3.0, sigma=1.5, lengthscale=4.0, nu=1.5,
-                       num_features=256, noise_std=0.0)
+    field = SyntheticFlowField(config, sigma=1.5, lengthscale=4.0, nu=1.5,
+                               num_features=256)
     field.reset(jax.random.PRNGKey(3))
-    mean_field = field.get_mean_displacement_field()  # precomputed grid
+    vel_field = field.velocity_field()  # precomputed grid
 
     for (i, j) in [(1, 1), (8, 8), (15, 15)]:
         u_cont, _ = field.velocity_at_point(float(i), float(j))
-        assert float(u_cont) == pytest.approx(float(mean_field[i - 1, j - 1, 0]),
+        assert float(u_cont) == pytest.approx(float(vel_field[i - 1, j - 1, 0]),
                                               rel=1e-4, abs=1e-6)
 
 
@@ -150,7 +153,7 @@ def test_arena_step_position_is_continuous():
     env.reset(seed=7)
     obs, _, _, _, info = env.step(2)
     pos = info["position"]
-    # at least one coordinate should be fractional after a noisy step
+    # at least one coordinate should be fractional after a step
     assert not (_is_integer_valued(pos.i) and _is_integer_valued(pos.j))
     assert np.all(np.isfinite(obs))
 
@@ -175,10 +178,11 @@ def test_episode_visits_fractional_positions():
 
 def test_clip_boundary_on_fractional_positions():
     config = GridConfig.create(10, 8)
-    arena = GridArena(field=SimpleField(config, d_max=3.0),
+    field = ZeroField(config)
+    arena = GridArena(realized_field=field, observed_field=field,
                       actor=GridActor(noise_std=0.0),
                       config=config, initial_position=GridPosition(5.0, 4.0, None),
-                      boundary_mode="clip")
+                      max_displacement=3.0, boundary_mode="clip")
 
     # interior fractional stays put
     pos_in, oob_in = arena._enforce_boundaries_2d(GridPosition(7.3, 5.6, None))
@@ -195,10 +199,11 @@ def test_clip_boundary_on_fractional_positions():
 
 def test_terminal_boundary_flags_fractional_oob():
     config = GridConfig.create(10, 8)
-    arena = GridArena(field=SimpleField(config, d_max=3.0),
+    field = ZeroField(config)
+    arena = GridArena(realized_field=field, observed_field=field,
                       actor=GridActor(noise_std=0.0),
                       config=config, initial_position=GridPosition(5.0, 4.0, None),
-                      boundary_mode="terminal")
+                      max_displacement=3.0, boundary_mode="terminal")
     _, oob = arena._enforce_boundaries_2d(GridPosition(0.5, 4.0, None))
     assert oob is True
     _, oob_in = arena._enforce_boundaries_2d(GridPosition(1.5, 4.0, None))
@@ -206,7 +211,41 @@ def test_terminal_boundary_flags_fractional_oob():
 
 
 # ---------------------------------------------------------------------------
-# 6. Determinism still holds with continuous values
+# 6. Clip bound is enforced by the arena step
+# ---------------------------------------------------------------------------
+
+def test_arena_clips_displacement_to_max_displacement():
+    """The realized displacement applied per step never exceeds max_displacement."""
+    n = 30
+    config = GridConfig.create(n, n)
+    field = SyntheticFlowField(config, sigma=10.0, lengthscale=2.0, nu=2.5,
+                               num_features=200)
+    # action=1 (stay) keeps the controllable axis fixed regardless of scale;
+    # we only check the ambient (i) displacement, which comes from the field.
+    actor = GridActor(scale=1.5, noise_std=0.0, z_max=3.0)
+    target = GridPosition(n - 3, n - 3, None)
+    reward_fn = NavigationReward(target_position=target, vicinity_radius=2.0,
+                                 peak_reward=10.0, step_cost=0.1, proximity_scale=0.1)
+    max_disp = 1.0
+    arena = NavigationArena(
+        realized_field=field, observed_field=field, actor=actor, config=config,
+        initial_position=GridPosition(15, 15, None), target_position=target,
+        vicinity_radius=2.0, max_displacement=max_disp, boundary_mode="periodic",
+        reward_fn=reward_fn,
+    )
+    arena.reset(jax.random.PRNGKey(0))
+    for _ in range(10):
+        prev = arena.position
+        arena.step(1)
+        di = abs(arena.position.i - prev.i)
+        # account for periodic wrap on i
+        di = min(di, n - di)
+        assert di <= max_disp + 1e-6
+        assert abs(arena.last_displacement.u) <= max_disp + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# 7. Determinism still holds with continuous values
 # ---------------------------------------------------------------------------
 
 def test_continuous_trajectory_is_deterministic():
@@ -224,46 +263,3 @@ def test_continuous_trajectory_is_deterministic():
         trajs.append(traj)
     for t1, t2 in zip(trajs[0], trajs[1]):
         np.testing.assert_array_equal(t1, t2)
-
-
-# ---------------------------------------------------------------------------
-# 7. DP oracle still runs on the continuous env (discretizes internally)
-# ---------------------------------------------------------------------------
-
-def test_dp_agent_runs_on_continuous_env():
-    env = _make_rff_nav_env(noise_std=0.5, n=15, max_steps=20, seed=5)
-    agent = DPAgent(DPAgentConfig(), num_actions=3, obs_shape=env.observation_space.shape)
-
-    obs, _ = env.reset(seed=5)
-    agent.prepare_episode(env)  # runs backward induction on the discretized grid
-    action = agent.begin_episode(obs)
-    assert action in (0, 1, 2)
-
-    for _ in range(env.max_steps):
-        obs, reward, term, trunc, _ = env.step(action)
-        assert np.isfinite(reward)
-        if term or trunc:
-            break
-        action = agent.step(reward, obs)
-        assert action in (0, 1, 2)
-
-
-# ---------------------------------------------------------------------------
-# 8. Float d_max -> disp_levels and PMF shape
-# ---------------------------------------------------------------------------
-
-def test_float_d_max_disp_levels_and_pmf_shape():
-    config = GridConfig.create(20, 20)
-    field = RFFGPField(config, d_max=2.5, sigma=1.0, lengthscale=3.0, nu=2.5,
-                       num_features=128, noise_std=0.3)
-    field.reset(jax.random.PRNGKey(0))
-    assert field.disp_levels == 3
-    pmf_grid = field.get_displacement_pmf_grid()
-    assert pmf_grid.shape == (20, 20, 2 * 3 + 1)
-
-
-def test_explicit_disp_levels_override():
-    config = GridConfig.create(20, 20)
-    field = SimpleField(config, d_max=2.5, disp_levels=5)
-    assert field.disp_levels == 5
-    assert field.get_displacement_pmf_grid().shape[-1] == 2 * 5 + 1

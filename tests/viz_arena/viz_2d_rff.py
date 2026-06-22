@@ -17,7 +17,7 @@ from src.env import (
     GridConfig,
     GridPosition,
 )
-from src.env.field import RFFGPField
+from src.env.field import SyntheticFlowField
 
 
 def run_2d_visualization_rff():
@@ -56,10 +56,10 @@ def run_2d_visualization_rff():
     print(f"  Target: ({target_position.i}, {target_position.j})")
     
     # Create RFF GP field (2D = scalar field for single ambient axis)
-    field = RFFGPField(
-        config, d_max=d_max,
+    field = SyntheticFlowField(
+        config,
         sigma=sigma, lengthscale=lengthscale, nu=nu,
-        num_features=500, noise_std=2
+        num_features=500,
     )
     actor = GridActor(noise_std=2, scale=50)
     reward_fn = NavigationReward(
@@ -70,15 +70,19 @@ def run_2d_visualization_rff():
         proximity_scale=0.05,
     )
     arena = NavigationArena(
-        field=field,
+        realized_field=field,
+        observed_field=field,
         actor=actor,
         config=config,
         initial_position=initial_position,
         target_position=target_position,
         vicinity_radius=vicinity_radius,
+        max_displacement=d_max,
         boundary_mode='terminal',
         reward_fn=reward_fn,
         terminate_on_reach=False,
+        process_noise_std=2,
+        obs_noise_std=2,
     )
     
     renderer = NavigationRenderer(

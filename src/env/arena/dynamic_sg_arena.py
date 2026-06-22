@@ -11,7 +11,7 @@ import numpy as np
 
 from .grid_arena import GridArena
 from .reward import RewardFunction
-from ..field.abstract_field import AbstractField
+from ..field.flow_field import FlowField
 from ..actor.abstract_actor import AbstractActor
 from ..utils.types import (
     GridPosition,
@@ -42,23 +42,31 @@ class DynamicSGArena(GridArena):
 
     def __init__(
         self,
-        field: AbstractField,
+        realized_field: FlowField,
+        observed_field: FlowField,
         actor: AbstractActor,
         config: GridConfig,
         initial_position: GridPosition,
         target_position: GridPosition,
         vicinity_radius: float,
+        max_displacement: float,
         boundary_mode: str = "clip",
         vicinity_metric: str = "euclidean",
         *,
         reward_fn: RewardFunction,
+        process_noise_std: float = 0.0,
+        obs_noise_std: float = 0.0,
     ):
         super().__init__(
-            field=field,
+            realized_field=realized_field,
+            observed_field=observed_field,
             actor=actor,
             config=config,
             initial_position=initial_position,
+            max_displacement=max_displacement,
             boundary_mode=boundary_mode,
+            process_noise_std=process_noise_std,
+            obs_noise_std=obs_noise_std,
         )
 
         if vicinity_radius < 0.0:

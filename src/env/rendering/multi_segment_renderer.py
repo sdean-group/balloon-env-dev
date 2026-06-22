@@ -19,7 +19,7 @@ from .rendering_utils import get_layout_config_2d, get_layout_config_3d
 from ..utils.types import GridConfig
 
 if TYPE_CHECKING:
-    from ..field.abstract_field import AbstractField
+    from ..field.flow_field import FlowField
 
 
 _SEGMENT_COLORS = [
@@ -71,7 +71,7 @@ class MultiSegmentRenderer(NavigationRenderer):
         grid_subsample: Optional[int] = None,
         backend: str = "plotly",
         camera_eye: Optional[dict] = None,
-        field: Optional["AbstractField"] = None,
+        field: Optional["FlowField"] = None,
         show_field: bool = False,
     ):
         super().__init__(

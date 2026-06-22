@@ -15,7 +15,7 @@ from .rendering_utils import (
 from ..utils.types import GridConfig, NavigationArenaState, GridPosition
 
 if TYPE_CHECKING:
-    from ..field.abstract_field import AbstractField
+    from ..field.flow_field import FlowField
 
 
 class NavigationRenderer(Renderer):
@@ -39,7 +39,7 @@ class NavigationRenderer(Renderer):
         grid_subsample: Optional[int] = None,
         backend: str = 'plotly',
         camera_eye: Optional[dict] = None,
-        field: Optional['AbstractField'] = None,
+        field: Optional['FlowField'] = None,
         show_field: bool = False
     ):
         """Initialize navigation renderer.
@@ -57,8 +57,8 @@ class NavigationRenderer(Renderer):
                          - Top-down: {'x': 0, 'y': 0, 'z': 2.5}
                          - Side view: {'x': 2.5, 'y': 0, 'z': 0}
                          - Isometric: {'x': 1.5, 'y': -1.5, 'z': 1.0}
-            field: Optional field for visualizing mean displacements.
-            show_field: Whether to show field arrows (requires field with get_mean_displacement).
+            field: Optional FlowField for visualizing the velocity field.
+            show_field: Whether to show field arrows (requires field with velocity_field/velocity_at).
         """
         self.config = config
         self.width = width
@@ -315,18 +315,16 @@ class NavigationRenderer(Renderer):
         else:
             gx, gy = np.meshgrid(xs, ys, indexing='ij')
         
-        # Get displacement vectors: prefer bulk array, fall back to pointwise
-        if hasattr(self.field, 'get_mean_displacement_field'):
-            field_arr = self.field.get_mean_displacement_field()
-            if field_arr is None:
-                return None
+        # Get velocity vectors: prefer bulk array, fall back to pointwise
+        field_arr = self.field.velocity_field() if hasattr(self.field, 'velocity_field') else None
+        if field_arr is not None:
             if is_3d:
                 u = field_arr[::s, ::s, ::s, 0].ravel()
                 v = field_arr[::s, ::s, ::s, 1].ravel()
             else:
                 u = field_arr[::s, ::s, 0].ravel()
                 v = np.zeros_like(u)
-        elif hasattr(self.field, 'get_mean_displacement'):
+        elif hasattr(self.field, 'velocity_at'):
             flat_coords = np.column_stack(
                 [gx.ravel(), gy.ravel()] + ([gz.ravel()] if is_3d else [])
             )
@@ -335,10 +333,10 @@ class NavigationRenderer(Renderer):
             for idx, coords in enumerate(flat_coords):
                 pos = GridPosition(int(coords[0]), int(coords[1]),
                                    int(coords[2]) if is_3d else None)
-                mean = self.field.get_mean_displacement(pos)
-                if mean is not None:
-                    u[idx] = mean[0]
-                    v[idx] = mean[1] if len(mean) > 1 else 0.0
+                vel = self.field.velocity_at(pos)
+                if vel is not None:
+                    u[idx] = vel[0]
+                    v[idx] = vel[1] if (len(vel) > 1 and vel[1] is not None) else 0.0
         else:
             return None
         

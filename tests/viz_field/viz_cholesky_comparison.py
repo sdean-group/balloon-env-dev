@@ -1,7 +1,7 @@
 """# %% [markdown]
 # RFF vs Cholesky GP Comparison (Interactive)
 #
-# This notebook-style script compares RFF sampling (`RFFGPField`) against exact
+# This notebook-style script compares RFF sampling (`SyntheticFlowField`) against exact
 # Cholesky sampling for a 2D Matern GP.
 #
 # Experiments included:
@@ -40,7 +40,7 @@ except ModuleNotFoundError:
 
 add_project_root_to_path()
 
-from src.env.field import RFFGPField
+from src.env.field import SyntheticFlowField
 from src.env.utils.types import GridConfig
 
 
@@ -95,7 +95,7 @@ class CholeskyGPSampler:
 
 
 def sample_rff_and_cholesky(
-    rff_field: RFFGPField,
+    rff_field: SyntheticFlowField,
     chol_sampler: CholeskyGPSampler,
     n_points: int,
     n_samples: int,
@@ -132,14 +132,12 @@ def compare_single_samples(
 ) -> None:
     config = GridConfig.create(n_x=n_x, n_y=n_y)
     locations = make_grid_locations_2d(n_x, n_y)
-    rff_field = RFFGPField(
+    rff_field = SyntheticFlowField(
         config,
-        d_max=5,
         sigma=sigma,
         lengthscale=lengthscale,
         nu=nu,
         num_features=num_features,
-        noise_std=0.0,
     )
     chol_sampler = CholeskyGPSampler(locations, sigma, lengthscale, nu)
 
@@ -208,14 +206,12 @@ def compare_mean_variance(
     locations = make_grid_locations_2d(n_x, n_y)
     n_points = n_x * n_y
 
-    rff_field = RFFGPField(
+    rff_field = SyntheticFlowField(
         config,
-        d_max=5,
         sigma=sigma,
         lengthscale=lengthscale,
         nu=nu,
         num_features=num_features,
-        noise_std=0.0,
     )
     chol_sampler = CholeskyGPSampler(locations, sigma, lengthscale, nu)
 
@@ -338,14 +334,12 @@ def compare_covariance_structure(
     locations = make_grid_locations_2d(n_x, n_y)
     n_points = n_x * n_y
 
-    rff_field = RFFGPField(
+    rff_field = SyntheticFlowField(
         config,
-        d_max=5,
         sigma=sigma,
         lengthscale=lengthscale,
         nu=nu,
         num_features=num_features,
-        noise_std=0.0,
     )
     chol_sampler = CholeskyGPSampler(locations, sigma, lengthscale, nu)
 

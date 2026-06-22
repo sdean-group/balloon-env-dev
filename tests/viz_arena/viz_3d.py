@@ -11,7 +11,7 @@ from src.env import (
     GridEnvironment,
     NavigationArena,
     NavigationReward,
-    SimpleField,
+    ConstantDriftField,
     GridActor,
     NavigationRenderer,
     GridConfig,
@@ -48,7 +48,7 @@ def run_3d_visualization():
     print(f"  Vicinity radius: {vicinity_radius}")
     
     # Create components
-    field = SimpleField(config, d_max=d_max)
+    field = ConstantDriftField(config, drift=[0.0, 0.0])
     actor = GridActor(noise_std=0.1)
     reward_fn = NavigationReward(
         target_position=target_position,
@@ -58,12 +58,14 @@ def run_3d_visualization():
         proximity_scale=0.1,
     )
     arena = NavigationArena(
-        field=field,
+        realized_field=field,
+        observed_field=field,
         actor=actor,
         config=config,
         initial_position=initial_position,
         target_position=target_position,
         vicinity_radius=vicinity_radius,
+        max_displacement=d_max,
         boundary_mode='clip',
         reward_fn=reward_fn,
         terminate_on_reach=False,
@@ -151,7 +153,7 @@ def run_3d_station_keeping():
     print(f"  Vicinity radius: {vicinity_radius}")
     print(f"  Agent tries to stay within vicinity despite field perturbations")
     
-    field = SimpleField(config, d_max=d_max)
+    field = ConstantDriftField(config, drift=[0.0, 0.0])
     actor = GridActor(noise_std=0.1)
     reward_fn = NavigationReward(
         target_position=target_position,
@@ -161,12 +163,14 @@ def run_3d_station_keeping():
         proximity_scale=0.1,
     )
     arena = NavigationArena(
-        field=field,
+        realized_field=field,
+        observed_field=field,
         actor=actor,
         config=config,
         initial_position=initial_position,
         target_position=target_position,
         vicinity_radius=vicinity_radius,
+        max_displacement=d_max,
         boundary_mode='clip',
         reward_fn=reward_fn,
         terminate_on_reach=False,

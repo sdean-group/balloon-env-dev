@@ -4,7 +4,7 @@ import numpy as np
 
 from .grid_arena import GridArena
 from .reward import RewardFunction
-from ..field.abstract_field import AbstractField
+from ..field.flow_field import FlowField
 from ..actor.abstract_actor import AbstractActor
 from ..utils.types import GridPosition, GridConfig, ArenaState, NavigationArenaState
 
@@ -19,38 +19,50 @@ class NavigationArena(GridArena):
 
     def __init__(
         self,
-        field: AbstractField,
+        realized_field: FlowField,
+        observed_field: FlowField,
         actor: AbstractActor,
         config: GridConfig,
         initial_position: GridPosition,
         target_position: GridPosition,
         vicinity_radius: float,
+        max_displacement: float,
         boundary_mode: str = "terminal",
         vicinity_metric: str = "euclidean",
         *,
         reward_fn: RewardFunction,
         terminate_on_reach: bool = False,
+        process_noise_std: float = 0.0,
+        obs_noise_std: float = 0.0,
     ):
         """Initialize navigation arena.
 
         Args:
-            field: Environmental field providing ambient displacements.
+            realized_field: Wind source W that moves the balloon.
+            observed_field: Wind source W_hat the agent observes.
             actor: Actor with controllable axis dynamics.
             config: Grid configuration.
             initial_position: Starting position.
             target_position: Goal position to reach.
             vicinity_radius: Radius around target that counts as "reached".
+            max_displacement: Per-step displacement magnitude bound.
             boundary_mode: Boundary handling ('clip', 'periodic', 'terminal').
             vicinity_metric: Distance metric for vicinity ('euclidean', 'l1', 'linf').
             reward_fn: Reward function (e.g. NavigationReward); caller constructs with desired params.
             terminate_on_reach: If True, episode ends when target is first reached.
+            process_noise_std: Std of optional per-step jitter on the realized field.
+            obs_noise_std: Std of optional per-step jitter on the observed field.
         """
         super().__init__(
-            field=field,
+            realized_field=realized_field,
+            observed_field=observed_field,
             actor=actor,
             config=config,
             initial_position=initial_position,
+            max_displacement=max_displacement,
             boundary_mode=boundary_mode,
+            process_noise_std=process_noise_std,
+            obs_noise_std=obs_noise_std,
         )
 
         if vicinity_radius < 0.0:
