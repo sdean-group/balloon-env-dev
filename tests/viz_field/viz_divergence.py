@@ -23,7 +23,7 @@ from _viz_common import add_project_root_to_path, format_params, save_figure
 
 add_project_root_to_path()
 
-from src.env.field import RFFGPField
+from src.env.field import SyntheticFlowField
 from src.env.utils.types import GridConfig
 
 # %% [markdown]
@@ -39,23 +39,21 @@ def build_3d_field(
     nu: float = 2.5,
     num_features: int = 500,
     seed: int = 42,
-) -> RFFGPField:
+) -> SyntheticFlowField:
     """Create and reset a 3D RFF streamfunction field."""
     config = GridConfig.create(n_x=n_x, n_y=n_y, n_z=n_z)
-    field = RFFGPField(
+    field = SyntheticFlowField(
         config=config,
-        d_max=2,
         sigma=sigma,
         lengthscale=lengthscale,
         nu=nu,
         num_features=num_features,
-        noise_std=0.0,
     )
     field.reset(jax.random.PRNGKey(seed))
     return field
 
 
-def compute_divergence_at_point(field: RFFGPField, x: float, y: float, z: float) -> float:
+def compute_divergence_at_point(field: SyntheticFlowField, x: float, y: float, z: float) -> float:
     """Compute divergence du/dx + dv/dy using JAX autodiff."""
     def u_fn(x_, y_, z_):
         u, _ = field.velocity_at_point(x_, y_, z_)
@@ -70,7 +68,7 @@ def compute_divergence_at_point(field: RFFGPField, x: float, y: float, z: float)
     return float(du_dx + dv_dy)
 
 
-def compute_divergence_grid(field: RFFGPField, n_samples: int = 25) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def compute_divergence_grid(field: SyntheticFlowField, n_samples: int = 25) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Evaluate divergence on a regular x-y grid at mid z."""
     x_vals = np.linspace(1.5, field.config.n_x - 0.5, n_samples)
     y_vals = np.linspace(1.5, field.config.n_y - 0.5, n_samples)
@@ -99,7 +97,7 @@ def visualize_divergence_single_field(
 ) -> None:
     n_x, n_y, n_z = grid_shape
     field = build_3d_field(n_x, n_y, n_z, sigma, lengthscale, nu, num_features, seed)
-    mean_field = field.get_mean_displacement_field()
+    mean_field = field.velocity_field()
     z_idx = n_z // 2
     u_field = mean_field[:, :, z_idx, 0]
     v_field = mean_field[:, :, z_idx, 1]
@@ -186,14 +184,12 @@ def visualize_divergence_multiple_realizations(
 ) -> None:
     n_x, n_y, n_z = grid_shape
     config = GridConfig.create(n_x=n_x, n_y=n_y, n_z=n_z)
-    field = RFFGPField(
+    field = SyntheticFlowField(
         config=config,
-        d_max=2,
         sigma=sigma,
         lengthscale=lengthscale,
         nu=nu,
         num_features=num_features,
-        noise_std=0.0,
     )
 
     all_divergences = []
@@ -296,7 +292,7 @@ def compare_analytical_vs_finite_diff(
 ) -> None:
     n_x, n_y, n_z = grid_shape
     field = build_3d_field(n_x, n_y, n_z, sigma, lengthscale, nu, num_features, seed)
-    mean_field = field.get_mean_displacement_field()
+    mean_field = field.velocity_field()
     z_idx = n_z // 2
     u_field = mean_field[:, :, z_idx, 0]
     v_field = mean_field[:, :, z_idx, 1]

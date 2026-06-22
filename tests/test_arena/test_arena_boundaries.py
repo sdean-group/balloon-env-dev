@@ -8,7 +8,7 @@ import pytest
 import numpy as np
 
 from src.env.arena.grid_arena import GridArena
-from src.env.field.simple_field import SimpleField
+from src.env.field.composite import ZeroField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
@@ -69,14 +69,15 @@ def _make_arena(cfg: dict, mode: str) -> GridArena:
     config = GridConfig.create(cfg["n_x"], cfg["n_y"], cfg["n_z"])
     d_max = max(0, min(cfg["n_x"], cfg["n_y"] if cfg["ndim"] == 3 else cfg["n_x"]) - 1)
     d_max = min(d_max, 3)
-    field = SimpleField(config, d_max=d_max)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
     if cfg["ndim"] == 3:
         init = GridPosition(1, 1, 1)
     else:
         init = GridPosition(1, 1, None)
-    return GridArena(field=field, actor=actor, config=config,
-                     initial_position=init, boundary_mode=mode)
+    return GridArena(realized_field=field, observed_field=field, actor=actor,
+                     config=config, initial_position=init,
+                     max_displacement=d_max, boundary_mode=mode)
 
 
 def _case_id(case):
@@ -171,10 +172,11 @@ EXTREME_POSITIONS_3D = [
 def test_extreme_positions_2d(pos, mode):
     """Extreme 2D positions never crash; clip always returns in-bounds."""
     config = GridConfig.create(n_x=10, n_y=8)
-    field = SimpleField(config, d_max=3)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
-    arena = GridArena(field=field, actor=actor, config=config,
-                      initial_position=GridPosition(5, 4, None), boundary_mode=mode)
+    arena = GridArena(realized_field=field, observed_field=field, actor=actor,
+                      config=config, initial_position=GridPosition(5, 4, None),
+                      max_displacement=3, boundary_mode=mode)
 
     new_pos, oob = arena._enforce_boundaries_2d(pos)
 
@@ -190,10 +192,11 @@ def test_extreme_positions_2d(pos, mode):
 def test_extreme_positions_3d(pos, mode):
     """Extreme 3D positions never crash; clip always returns in-bounds."""
     config = GridConfig.create(n_x=10, n_y=10, n_z=5)
-    field = SimpleField(config, d_max=3)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
-    arena = GridArena(field=field, actor=actor, config=config,
-                      initial_position=GridPosition(5, 5, 3), boundary_mode=mode)
+    arena = GridArena(realized_field=field, observed_field=field, actor=actor,
+                      config=config, initial_position=GridPosition(5, 5, 3),
+                      max_displacement=3, boundary_mode=mode)
 
     new_pos, oob = arena._enforce_boundaries_3d(pos)
 
@@ -212,11 +215,12 @@ def test_extreme_positions_3d(pos, mode):
 @pytest.mark.parametrize("mode", ["invalid", "wrap", "absorb", "", "CLIP"])
 def test_invalid_boundary_mode_rejected(mode):
     config = GridConfig.create(n_x=5, n_y=5)
-    field = SimpleField(config, d_max=1)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
     with pytest.raises(ValueError, match="boundary_mode must be one of"):
-        GridArena(field=field, actor=actor, config=config,
-                  initial_position=GridPosition(1, 1, None), boundary_mode=mode)
+        GridArena(realized_field=field, observed_field=field, actor=actor,
+                  config=config, initial_position=GridPosition(1, 1, None),
+                  max_displacement=1, boundary_mode=mode)
 
 
 @pytest.mark.parametrize(
@@ -238,8 +242,9 @@ def test_invalid_initial_position_rejected(pos, ndim, match):
         config = GridConfig.create(n_x=5, n_y=5)
     else:
         config = GridConfig.create(n_x=5, n_y=5, n_z=5)
-    field = SimpleField(config, d_max=1)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
     with pytest.raises(ValueError, match=match):
-        GridArena(field=field, actor=actor, config=config,
-                  initial_position=pos, boundary_mode="clip")
+        GridArena(realized_field=field, observed_field=field, actor=actor,
+                  config=config, initial_position=pos,
+                  max_displacement=1, boundary_mode="clip")

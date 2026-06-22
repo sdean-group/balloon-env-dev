@@ -3,8 +3,15 @@
 from .environment import GridEnvironment
 from .arena import AbstractArena, GridArena, NavigationArena, DynamicSGArena
 from .arena.reward import RewardFunction, NavigationReward
-from .field.abstract_field import AbstractField
-from .field.simple_field import SimpleField
+from .field import (
+    FlowField,
+    SyntheticFlowField,
+    ConstantDriftField,
+    UniformDriftField,
+    SumField,
+    ScaledField,
+    ZeroField,
+)
 from .actor.abstract_actor import AbstractActor
 from .actor.grid_actor import GridActor
 from .rendering import Renderer, NavigationRenderer, MultiSegmentRenderer
@@ -29,8 +36,13 @@ __all__ = [
     'RewardFunction',
     'NavigationReward',
     # Field
-    'AbstractField',
-    'SimpleField',
+    'FlowField',
+    'SyntheticFlowField',
+    'ConstantDriftField',
+    'UniformDriftField',
+    'SumField',
+    'ScaledField',
+    'ZeroField',
     # Actor
     'AbstractActor',
     'GridActor',

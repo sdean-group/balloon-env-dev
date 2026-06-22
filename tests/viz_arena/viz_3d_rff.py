@@ -17,7 +17,7 @@ from src.env import (
     GridConfig,
     GridPosition,
 )
-from src.env.field import RFFGPField
+from src.env.field import SyntheticFlowField
 
 
 def run_3d_visualization_rff():
@@ -60,10 +60,10 @@ def run_3d_visualization_rff():
     print(f"  Vicinity radius: {vicinity_radius}")
     
     # Create RFF GP field (3D = streamfunction method for divergence-free field)
-    field = RFFGPField(
-        config, d_max=d_max,
+    field = SyntheticFlowField(
+        config,
         sigma=sigma, lengthscale=lengthscale, nu=nu,
-        num_features=500, noise_std=0.5
+        num_features=500,
     )
     actor = GridActor(noise_std=0.5, scale=2.5)
     reward_fn = NavigationReward(
@@ -74,15 +74,19 @@ def run_3d_visualization_rff():
         proximity_scale=0.3,
     )
     arena = NavigationArena(
-        field=field,
+        realized_field=field,
+        observed_field=field,
         actor=actor,
         config=config,
         initial_position=initial_position,
         target_position=target_position,
         vicinity_radius=vicinity_radius,
+        max_displacement=d_max,
         boundary_mode='terminal',
         reward_fn=reward_fn,
         terminate_on_reach=False,
+        process_noise_std=0.5,
+        obs_noise_std=0.5,
     )
     
     renderer = NavigationRenderer(
@@ -157,10 +161,10 @@ def run_3d_station_keeping_rff():
     print(f"  Vicinity radius: {vicinity_radius}")
     print(f"  Agent tries to stay within vicinity despite GP field perturbations")
     
-    field = RFFGPField(
-        config, d_max=d_max,
+    field = SyntheticFlowField(
+        config,
         sigma=1.0, lengthscale=3.0, nu=2.5,
-        num_features=500, noise_std=0.1
+        num_features=500,
     )
     actor = GridActor(noise_std=0.1)
     reward_fn = NavigationReward(
@@ -171,15 +175,19 @@ def run_3d_station_keeping_rff():
         proximity_scale=0.5,
     )
     arena = NavigationArena(
-        field=field,
+        realized_field=field,
+        observed_field=field,
         actor=actor,
         config=config,
         initial_position=initial_position,
         target_position=target_position,
         vicinity_radius=vicinity_radius,
+        max_displacement=d_max,
         boundary_mode='clip',
         reward_fn=reward_fn,
         terminate_on_reach=False,
+        process_noise_std=0.1,
+        obs_noise_std=0.1,
     )
     
     renderer = NavigationRenderer(

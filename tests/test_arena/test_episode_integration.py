@@ -12,8 +12,8 @@ import jax
 from src.env.environment import GridEnvironment
 from src.env.arena.grid_arena import GridArena
 from src.env.arena.navigation_arena import NavigationArena
-from src.env.field.simple_field import SimpleField
-from src.env.field.rff_gp_field import RFFGPField
+from src.env.field.simple_field import UniformDriftField
+from src.env.field.composite import ZeroField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
@@ -26,10 +26,11 @@ from tests.test_arena.reward_helpers import make_reward_fn
 
 def _make_grid_env(config, initial, *, boundary_mode="clip", d_max=1,
                    max_steps=100, seed=42, **actor_kw) -> GridEnvironment:
-    field = SimpleField(config, d_max=d_max)
+    field = UniformDriftField(config, max_drift=d_max)
     actor = GridActor(**{"noise_std": 0.0, **actor_kw})
-    arena = GridArena(field=field, actor=actor, config=config,
-                      initial_position=initial, boundary_mode=boundary_mode)
+    arena = GridArena(realized_field=field, observed_field=field, actor=actor,
+                      config=config, initial_position=initial,
+                      max_displacement=d_max, boundary_mode=boundary_mode)
     return GridEnvironment(arena=arena, max_steps=max_steps, seed=seed)
 
 
@@ -43,16 +44,17 @@ def _make_nav_env(config, initial, target, *, vicinity_radius=2.0,
     kwargs: reward params (peak_reward, step_cost, proximity_scale) go to make_reward_fn;
     the rest go to GridActor (e.g. noise_std).
     """
-    field = SimpleField(config, d_max=d_max)
+    field = UniformDriftField(config, max_drift=d_max)
     reward_kw = {k: v for k, v in kwargs.items() if k in _REWARD_KEYS}
     actor_kw = {k: v for k, v in kwargs.items() if k not in _REWARD_KEYS}
     actor = GridActor(**{"noise_std": 0.0, **actor_kw})
     if reward_fn is None:
         reward_fn = make_reward_fn(target, vicinity_radius, **reward_kw)
     arena = NavigationArena(
-        field=field, actor=actor, config=config,
+        realized_field=field, observed_field=field, actor=actor, config=config,
         initial_position=initial, target_position=target,
-        vicinity_radius=vicinity_radius, boundary_mode=boundary_mode,
+        vicinity_radius=vicinity_radius, max_displacement=d_max,
+        boundary_mode=boundary_mode,
         reward_fn=reward_fn,
         terminate_on_reach=terminate_on_reach,
     )
@@ -372,36 +374,41 @@ def test_station_keeping_accumulates(ndim):
 @pytest.mark.parametrize("max_steps", [0, -1, -100])
 def test_environment_rejects_invalid_max_steps(max_steps):
     config = GridConfig.create(5, 5)
-    field = SimpleField(config, d_max=1)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
-    arena = GridArena(field=field, actor=actor, config=config,
-                      initial_position=GridPosition(1, 1, None),
-                      boundary_mode="clip")
+    arena = GridArena(realized_field=field, observed_field=field, actor=actor,
+                      config=config, initial_position=GridPosition(1, 1, None),
+                      max_displacement=1, boundary_mode="clip")
     with pytest.raises(ValueError, match="max_steps must be positive"):
         GridEnvironment(arena=arena, max_steps=max_steps)
 
 
 @pytest.mark.parametrize(
-    ("d_max", "match"),
+    ("max_displacement", "match"),
     [
-        (-1, "d_max must be non-negative"),
-        (5, "d_max must be smaller"),   # d_max >= n_x=5
-        (10, "d_max must be smaller"),
+        (-1, "max_displacement must be non-negative"),
+        (5, "max_displacement must be smaller"),   # max_displacement >= n_x=5
+        (10, "max_displacement must be smaller"),
     ],
 )
-def test_field_rejects_invalid_d_max(d_max, match):
+def test_arena_rejects_invalid_max_displacement(max_displacement, match):
+    """max_displacement validation now lives on the arena (clip + obs bound)."""
     config = GridConfig.create(n_x=5, n_y=5)
+    field = ZeroField(config)
+    actor = GridActor(noise_std=0.0)
     with pytest.raises(ValueError, match=match):
-        SimpleField(config, d_max=d_max)
+        GridArena(realized_field=field, observed_field=field, actor=actor,
+                  config=config, initial_position=GridPosition(1, 1, None),
+                  max_displacement=max_displacement, boundary_mode="clip")
 
 
-@pytest.mark.parametrize(
-    ("d_max", "expected_levels"),
-    [(2.5, 3), (1.7, 2), (2.0, 2), (0.4, 1)],
-)
-def test_field_accepts_float_d_max(d_max, expected_levels):
-    """Float d_max is valid (continuous clip bound); disp_levels = ceil(d_max)."""
+@pytest.mark.parametrize("max_displacement", [2.5, 1.7, 2.0, 0.4])
+def test_arena_accepts_float_max_displacement(max_displacement):
+    """Float max_displacement is a valid continuous clip bound."""
     config = GridConfig.create(n_x=5, n_y=5)
-    field = SimpleField(config, d_max=d_max)
-    assert field.d_max == pytest.approx(d_max)
-    assert field.disp_levels == expected_levels
+    field = ZeroField(config)
+    actor = GridActor(noise_std=0.0)
+    arena = GridArena(realized_field=field, observed_field=field, actor=actor,
+                      config=config, initial_position=GridPosition(1, 1, None),
+                      max_displacement=max_displacement, boundary_mode="clip")
+    assert arena.max_displacement == pytest.approx(max_displacement)

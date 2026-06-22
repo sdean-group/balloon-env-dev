@@ -11,7 +11,7 @@ import jax
 
 from src.env.arena.navigation_arena import NavigationArena
 from src.env.arena.reward import NavigationReward
-from src.env.field.simple_field import SimpleField
+from src.env.field.composite import ZeroField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
@@ -36,14 +36,15 @@ def _make_arena(
         config = GridConfig.create(n, n, n)
     else:
         config = GridConfig.create(n, n)
-    field = SimpleField(config, d_max=d_max)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
     if reward_fn is None:
         reward_fn = make_reward_fn(target, vicinity_radius, **reward_kwargs)
     return NavigationArena(
-        field=field, actor=actor, config=config,
+        realized_field=field, observed_field=field, actor=actor, config=config,
         initial_position=initial, target_position=target,
-        vicinity_radius=vicinity_radius, boundary_mode="clip",
+        vicinity_radius=vicinity_radius, max_displacement=d_max,
+        boundary_mode="clip",
         reward_fn=reward_fn,
         terminate_on_reach=False,
     )
@@ -126,12 +127,12 @@ def test_reward_decreases_with_distance(ndim):
 
     reward_fn = make_reward_fn(target, vicinity_radius=10.0, peak_reward=10.0, step_cost=0.2, proximity_scale=0.1)
     config = GridConfig.create(n, n, n) if ndim == 3 else GridConfig.create(n, n)
-    field = SimpleField(config, d_max=0)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
     arena = NavigationArena(
-        field=field, actor=actor, config=config,
+        realized_field=field, observed_field=field, actor=actor, config=config,
         initial_position=positions[0], target_position=target,
-        vicinity_radius=10.0, boundary_mode="clip",
+        vicinity_radius=10.0, max_displacement=0, boundary_mode="clip",
         reward_fn=reward_fn,
     )
 
@@ -179,15 +180,16 @@ def test_cumulative_reward_and_reset(ndim):
 )
 def test_navigation_arena_rejects_invalid_params(kwargs, match):
     config = GridConfig.create(n_x=10, n_y=10)
-    field = SimpleField(config, d_max=1)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
     target = GridPosition(5, 5, None)
     reward_fn = make_reward_fn(target, vicinity_radius=2.0)
     defaults = dict(
-        field=field, actor=actor, config=config,
+        realized_field=field, observed_field=field, actor=actor, config=config,
         initial_position=target,
         target_position=target,
         vicinity_radius=2.0,
+        max_displacement=1,
         reward_fn=reward_fn,
     )
     defaults.update(kwargs)
@@ -235,12 +237,12 @@ def test_navigation_arena_rejects_oob_target(target, ndim, match):
     else:
         config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         init = GridPosition(5, 5, 5)
-    field = SimpleField(config, d_max=1)
+    field = ZeroField(config)
     actor = GridActor(noise_std=0.0)
     reward_fn = make_reward_fn(init, vicinity_radius=2.0)
     with pytest.raises(ValueError, match=match):
         NavigationArena(
-            field=field, actor=actor, config=config,
+            realized_field=field, observed_field=field, actor=actor, config=config,
             initial_position=init, target_position=target,
-            vicinity_radius=2.0, reward_fn=reward_fn,
+            vicinity_radius=2.0, max_displacement=1, reward_fn=reward_fn,
         )

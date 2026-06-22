@@ -20,7 +20,7 @@ from _viz_common import add_project_root_to_path, format_params, save_figure
 
 add_project_root_to_path()
 
-from src.env.field import RFFGPField
+from src.env.field import SyntheticFlowField
 from src.env.utils.types import GridConfig
 
 
@@ -39,14 +39,12 @@ def build_2d_field(
 ) -> np.ndarray:
     """Build and sample one 2D RFF field realization."""
     config = GridConfig.create(n_x=n_x, n_y=n_y)
-    field = RFFGPField(
+    field = SyntheticFlowField(
         config=config,
-        d_max=max(1, min(5, n_x - 1)),
         sigma=sigma,
         lengthscale=lengthscale,
         nu=nu,
         num_features=num_features,
-        noise_std=0.0,
     )
     field.reset(jax.random.PRNGKey(seed))
     return np.asarray(field._precomputed_u)
@@ -287,17 +285,15 @@ def study_3d_field(
 ) -> None:
     n_x, n_y, n_z = grid_shape
     config = GridConfig.create(n_x=n_x, n_y=n_y, n_z=n_z)
-    field = RFFGPField(
+    field = SyntheticFlowField(
         config=config,
-        d_max=3,
         sigma=sigma,
         lengthscale=lengthscale,
         nu=nu,
         num_features=num_features,
-        noise_std=0.0,
     )
     field.reset(jax.random.PRNGKey(seed))
-    mean_field = field.get_mean_displacement_field()
+    mean_field = field.velocity_field()
 
     z_levels = [0, max(0, n_z // 4), max(0, n_z // 2), n_z - 1]
     fig, axes = plt.subplots(2, len(z_levels), figsize=(4.8 * len(z_levels), 9))

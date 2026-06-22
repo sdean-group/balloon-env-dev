@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from .abstract_arena import AbstractArena
-from ..field.abstract_field import AbstractField
+from ..field.flow_field import FlowField, unique_fields
 from ..actor.abstract_actor import AbstractActor
 from ..utils.types import (
     GridPosition, DisplacementObservation, GridConfig, ArenaState, GridArenaState
@@ -16,47 +16,86 @@ from ..utils.types import (
 
 class GridArena(AbstractArena):
     """Basic grid arena with configurable boundary handling.
-    
+
     Supports both 2D and 3D settings:
     - 3D: Actor controls z-axis, field controls (x, y)
     - 2D: Actor controls y-axis, field controls (x,)
-    
+
+    The arena holds *two* wind sources and owns all dynamics (how wind becomes
+    motion):
+
+    - ``realized_field`` (W) moves the balloon.
+    - ``observed_field`` (W_hat) produces the observation the agent sees.
+
+    Sharing a field object between the two (e.g. ``realized = observed + error``)
+    makes them correlated, since shared sub-fields are drawn once at reset. The arena
+    clamps displacements to ``max_displacement`` and optionally adds per-step noise.
+
     Supports different boundary conditions and serves as base for specific tasks.
     """
-    
+
     def __init__(
         self,
-        field: AbstractField,
+        realized_field: FlowField,
+        observed_field: FlowField,
         actor: AbstractActor,
         config: GridConfig,
         initial_position: GridPosition,
-        boundary_mode: str = 'terminal'
+        max_displacement: float,
+        boundary_mode: str = 'terminal',
+        process_noise_std: float = 0.0,
+        obs_noise_std: float = 0.0,
     ):
         """Initialize grid arena.
-        
+
         Args:
-            field: Environmental field providing ambient displacements.
+            realized_field: Wind source W that moves the balloon.
+            observed_field: Wind source W_hat the agent observes.
             actor: Actor with controllable axis dynamics.
             config: Grid configuration.
             initial_position: Starting position for reset.
+            max_displacement: Per-step displacement magnitude bound; displacements
+                are clipped to [-max_displacement, max_displacement] and this bounds
+                the observation space.
             boundary_mode: How to handle boundaries:
                 - 'clip': Clamp position to valid range
                 - 'periodic': Wrap around on ambient axes, clip on controllable
                 - 'terminal': Mark as terminal when crossing boundary (default)
+            process_noise_std: Std of optional white jitter added to the realized
+                displacement at sample time (0 = off).
+            obs_noise_std: Std of optional white jitter added to the observed
+                displacement at sample time (0 = off).
         """
-        self.field = field
+        self.realized_field = realized_field
+        self.observed_field = observed_field
         self.actor = actor
         self.config = config
         self.initial_position = initial_position
         self.boundary_mode = boundary_mode
-        
+        self.process_noise_std = float(process_noise_std)
+        self.obs_noise_std = float(obs_noise_std)
+
+        # Validate max_displacement (clip bound + observation-space bound)
+        self.max_displacement = float(max_displacement)
+        if self.max_displacement < 0:
+            raise ValueError("max_displacement must be non-negative")
+        if self.ndim == 3:
+            if self.max_displacement >= min(config.n_x, config.n_y):
+                raise ValueError("max_displacement must be smaller than ambient dimensions")
+        else:
+            if self.max_displacement >= config.n_x:
+                raise ValueError("max_displacement must be smaller than ambient dimension")
+
+        if self.process_noise_std < 0 or self.obs_noise_std < 0:
+            raise ValueError("noise std values must be non-negative")
+
         # Validate boundary mode
         valid_modes = ['clip', 'periodic', 'terminal']
         if boundary_mode not in valid_modes:
             raise ValueError(
                 f"boundary_mode must be one of {valid_modes}, got {boundary_mode}"
             )
-        
+
         # Validate initial_position is within grid
         if not (1 <= initial_position.i <= config.n_x and
                 1 <= initial_position.j <= config.n_y):
@@ -101,13 +140,17 @@ class GridArena(AbstractArena):
     
     def reset(self, rng_key: jnp.ndarray) -> np.ndarray:
         """Reset arena to initial state."""
-        # Split RNG for field and future use
+        # Split RNG for fields and future use
         self._rng = rng_key
-        field_key, self._rng = jax.random.split(self._rng)
-        
-        # Reset field
-        self.field.reset(field_key)
-        
+
+        # Reset each UNIQUE field exactly once -> shared sub-fields are drawn once
+        # and stay correlated between realized and observed.
+        fields = unique_fields(self.realized_field, self.observed_field)
+        keys = jax.random.split(self._rng, len(fields) + 1)
+        self._rng = keys[0]
+        for f, k in zip(fields, keys[1:]):
+            f.reset(k)
+
         # Reset state
         self.position = self.initial_position
         self.last_position = self.initial_position
@@ -123,43 +166,71 @@ class GridArena(AbstractArena):
         """Execute one simulation step."""
         # Track action
         self._last_action = action
-        
-        # Split RNG keys for field and actor
-        field_key, actor_key, self._rng = jax.random.split(self._rng, 3)
-        
-        # 1. Sample ambient displacement from field (continuous)
-        displacement_obs = self.field.sample_displacement(
-            self.position, field_key
-        )
-        
-        # 2. Apply ambient displacement (discrete state transition)
+
+        # Split RNG keys: realized (W), observed (W_hat), actor, and carry.
+        true_key, obs_key, actor_key, self._rng = jax.random.split(self._rng, 4)
+
+        # Sample both displacements at the CURRENT position (before moving).
+        true_disp = self._displacement(self.realized_field, true_key, self.process_noise_std)
+        obs_disp = self._displacement(self.observed_field, obs_key, self.obs_noise_std)
+
         # Store last position before update
         self.last_position = self.position
-        
-        if self.ndim == 3:
-            # 3D: update (i, j) from field (continuous), keep k
-            new_i = self.position.i + displacement_obs.u
-            new_j = self.position.j + displacement_obs.v
-            self.position = GridPosition(new_i, new_j, self.position.k)
-        else:
-            # 2D: update (i,) from field (continuous), keep j
-            new_i = self.position.i + displacement_obs.u
-            self.position = GridPosition(new_i, self.position.j, None)
-        
-        # 3. Apply controllable action
+
+        # 1. Apply realized displacement W (continuous state transition)
+        self._move(true_disp)
+
+        # 2. Apply controllable action
         self.position = self.actor.step_controllable(self.position, action, actor_key)
-        
-        # 4. Enforce boundaries
+
+        # 3. Enforce boundaries
         self.position, self._out_of_bounds = self._enforce_boundaries(
             self.position
         )
-        
-        # Store displacement observation for next observation
-        self.last_displacement = displacement_obs
-        
+
+        # 4. Agent observes W_hat
+        self.last_displacement = obs_disp
+
         self.step_count += 1
-        
+
         return self._get_observation()
+
+    def _move(self, displacement: DisplacementObservation) -> None:
+        """Apply an ambient displacement to the current position."""
+        if self.ndim == 3:
+            new_i = self.position.i + displacement.u
+            new_j = self.position.j + displacement.v
+            self.position = GridPosition(new_i, new_j, self.position.k)
+        else:
+            new_i = self.position.i + displacement.u
+            self.position = GridPosition(new_i, self.position.j, None)
+
+    def _displacement(
+        self, field: FlowField, key: jnp.ndarray, noise_std: float
+    ) -> DisplacementObservation:
+        """Sample a clipped displacement from ``field`` at the current position.
+
+        Reads the deterministic velocity, optionally adds white per-step jitter,
+        then clamps to [-max_displacement, max_displacement].
+        """
+        u, v = field.velocity_at(self.position)
+        if noise_std:
+            if v is not None:
+                key_u, key_v = jax.random.split(key)
+                u = u + float(jax.random.normal(key_u) * noise_std)
+                v = v + float(jax.random.normal(key_v) * noise_std)
+            else:
+                u = u + float(jax.random.normal(key) * noise_std)
+        return self._clip(u, v)
+
+    def _clip(self, u: float, v=None) -> DisplacementObservation:
+        """Clip displacement values to [-max_displacement, max_displacement]."""
+        d = self.max_displacement
+        u_clipped = float(max(-d, min(d, u)))
+        if v is not None:
+            v_clipped = float(max(-d, min(d, v)))
+            return DisplacementObservation(u_clipped, v_clipped)
+        return DisplacementObservation(u_clipped, None)
     
     def get_state(self) -> GridArenaState:
         """Get complete grid arena state."""
@@ -224,8 +295,8 @@ class GridArena(AbstractArena):
         - 3D: [i, j, k, u_obs, v_obs] (5 dimensions)
         - 2D: [i, j, u_obs] (3 dimensions)
         """
-        d_max = self.field.d_max
-        
+        d_max = self.max_displacement
+
         if self.ndim == 3:
             return gym.spaces.Box(
                 low=np.array([1, 1, 1, -d_max, -d_max], dtype=np.float32),
