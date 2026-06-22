@@ -208,6 +208,108 @@ def _resample_to_grid(ds, grid_shape, src_lvl, src_lat, src_lon,
     return winds
 
 
+# -------------------------------------------------------------------- open-meteo source
+def fetch_from_openmeteo(
+    grid_shape: Sequence[int],
+    region: Tuple[float, float, float, float],  # (west, south, east, north)
+    *,
+    date: str = "2023-01-01",
+    end_date: Optional[str] = None,
+    src_grid: int = 6,
+) -> Tuple[np.ndarray, Dict]:
+    """Real ERA5-derived **surface (10m)** winds via the keyless Open-Meteo archive.
+
+    No Copernicus account needed. Queries a coarse ``src_grid`` x ``src_grid`` lattice of
+    lat/lon points over ``region``, pulls hourly 10m wind speed+direction (m/s), converts to
+    (u, v), then linearly resamples onto the env grid. Because real ``u`` changes sign, the
+    agent will drift both east and west -- a clear visual contrast with the demo source.
+
+    Note: this is a single (surface) level. For a 2D env it stores ``u`` only; for a 3D env it
+    broadcasts the horizontal (u, v) across all altitude levels (no real vertical structure --
+    that needs pressure-level ERA5 via ``--source cds``).
+    """
+    import json
+    import urllib.request
+
+    grid_shape = tuple(int(n) for n in grid_shape)
+    ndim = len(grid_shape)
+    west, south, east, north = region
+    end_date = end_date or date
+
+    # Coarse source lattice we actually download, then interpolate up to the env grid.
+    src_lon = np.linspace(west, east, src_grid)
+    src_lat = np.linspace(south, north, src_grid)
+    LON, LAT = np.meshgrid(src_lon, src_lat, indexing="ij")  # (src_grid, src_grid)
+    flat_lat = LAT.ravel()
+    flat_lon = LON.ravel()
+
+    # Batch the points into requests (Open-Meteo accepts comma-separated coordinate lists).
+    speeds, dirs, n_hours = [], [], None
+    for start in range(0, flat_lat.size, 100):
+        sl = slice(start, start + 100)
+        lat_csv = ",".join(f"{v:.4f}" for v in flat_lat[sl])
+        lon_csv = ",".join(f"{v:.4f}" for v in flat_lon[sl])
+        url = (
+            "https://archive-api.open-meteo.com/v1/archive"
+            f"?latitude={lat_csv}&longitude={lon_csv}"
+            f"&start_date={date}&end_date={end_date}"
+            "&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=UTC"
+        )
+        with urllib.request.urlopen(url, timeout=60) as r:
+            payload = json.load(r)
+        locs = payload if isinstance(payload, list) else [payload]
+        for loc in locs:
+            h = loc["hourly"]
+            speeds.append(np.asarray(h["wind_speed_10m"], dtype=np.float64))
+            dirs.append(np.asarray(h["wind_direction_10m"], dtype=np.float64))
+            n_hours = len(h["time"])
+
+    speed = np.array(speeds).reshape(src_grid, src_grid, n_hours)      # (lon, lat, T)
+    direction = np.array(dirs).reshape(src_grid, src_grid, n_hours)
+    speed = np.nan_to_num(speed)
+    # Meteorological convention: direction is where wind comes FROM.
+    rad = np.deg2rad(direction)
+    u_src = -speed * np.sin(rad)   # eastward
+    v_src = -speed * np.cos(rad)   # northward
+
+    winds = _resample_openmeteo(u_src, v_src, src_lon, src_lat, grid_shape, n_hours, ndim)
+    meta = dict(
+        units="m/s", source="openmeteo-era5-10m",
+        region=dict(west=west, south=south, east=east, north=north),
+        level="10m surface", date=date, end_date=end_date, src_grid=src_grid,
+        n=grid_shape + (None,) * (3 - ndim),
+        note="real ERA5-derived SURFACE winds; for winds aloft use --source cds",
+    )
+    return winds.astype(np.float64), meta
+
+
+def _resample_openmeteo(u_src, v_src, src_lon, src_lat, grid_shape, n_hours, ndim):
+    """Linear-resample the coarse (u, v) lattice onto the env grid for every hour."""
+    from scipy.interpolate import RegularGridInterpolator
+
+    tgt_lon = np.linspace(src_lon.min(), src_lon.max(), grid_shape[0])
+    tgt_lat = np.linspace(src_lat.min(), src_lat.max(), grid_shape[1])
+    XX, YY = np.meshgrid(tgt_lon, tgt_lat, indexing="ij")
+    pts = np.column_stack([XX.ravel(), YY.ravel()])  # (lon, lat) order matches axes below
+
+    n_components = 1 if ndim == 2 else 2
+    winds = np.empty((n_hours, *grid_shape, n_components), dtype=np.float64)
+    for t in range(n_hours):
+        u_t = RegularGridInterpolator((src_lon, src_lat), u_src[..., t],
+                                      method="linear", bounds_error=False, fill_value=None)
+        u_grid = u_t(pts).reshape(grid_shape[0], grid_shape[1])
+        v_t = RegularGridInterpolator((src_lon, src_lat), v_src[..., t],
+                                      method="linear", bounds_error=False, fill_value=None)
+        v_grid = v_t(pts).reshape(grid_shape[0], grid_shape[1])
+        if ndim == 2:
+            winds[t, ..., 0] = u_grid                      # 2D env: eastward component only
+        else:
+            for k in range(grid_shape[2]):                 # broadcast across altitude levels
+                winds[t, ..., k, 0] = u_grid
+                winds[t, ..., k, 1] = v_grid
+    return winds
+
+
 # ------------------------------------------------------------------------------- io / cli
 def save_cache(path: str, winds: np.ndarray, meta: Dict) -> None:
     """Write the wind array + meta to a compressed ``.npz`` (loader uses allow_pickle)."""
@@ -218,7 +320,8 @@ def save_cache(path: str, winds: np.ndarray, meta: Dict) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Build the ERA5 wind cache for ReanalysisFlowField.")
-    p.add_argument("--source", choices=["demo", "cds"], default="demo")
+    p.add_argument("--source", choices=["demo", "openmeteo", "cds"], default="demo",
+                   help="demo=synthetic; openmeteo=real ERA5 10m winds (keyless); cds=real ERA5 aloft")
     p.add_argument("--grid", type=int, nargs="+", default=[80, 80],
                    help="n_x n_y [n_z] -- 2 entries for 2D, 3 for 3D")
     p.add_argument("--out", default="data/era5_demo_2d.npz")
@@ -231,6 +334,7 @@ def main() -> None:
                    default=[-125.0, 36.0, -120.0, 40.0])
     p.add_argument("--levels", type=int, nargs="+", default=None)
     p.add_argument("--date", default="2023-01-01")
+    p.add_argument("--end-date", default=None, help="openmeteo: last day (inclusive); more T")
     args = p.parse_args()
 
     if len(args.grid) not in (2, 3):
@@ -240,6 +344,10 @@ def main() -> None:
         winds, meta = make_demo_cache(
             args.grid, T=args.slices, seed=args.seed,
             mean_wind=args.mean_wind, std_wind=args.std_wind,
+        )
+    elif args.source == "openmeteo":
+        winds, meta = fetch_from_openmeteo(
+            args.grid, tuple(args.region), date=args.date, end_date=args.end_date,
         )
     else:
         winds, meta = fetch_from_cds(
