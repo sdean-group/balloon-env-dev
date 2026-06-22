@@ -20,4 +20,5 @@ filterwarnings = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "visual: marks tests that produce visual output for manual inspection",
+    "era5: requires a real ERA5 cache; opt-in, skipped in CI",
 ]
