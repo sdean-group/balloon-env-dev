@@ -17,28 +17,28 @@ from ..utils.types import GridPosition, DisplacementObservation, GridConfig
 
 
 def _compute_1d_pmf_grid(
-    means: jnp.ndarray, d_max: int, noise_std: float
+    means: jnp.ndarray, levels: int, noise_std: float
 ) -> jnp.ndarray:
     """Vectorized 1D clipped-normal PMF over an array of means.
 
     Args:
         means: shape ``(*grid_shape)`` — mean displacement at each cell.
-        d_max: Maximum displacement magnitude.
+        levels: Integer displacement resolution; PMF spans offsets {-levels..levels}.
         noise_std: Standard deviation of observation noise.
 
     Returns:
-        shape ``(*grid_shape, 2*d_max+1)`` PMF array.
+        shape ``(*grid_shape, 2*levels+1)`` PMF array.
     """
-    n_bins = 2 * d_max + 1
+    n_bins = 2 * levels + 1
 
-    if d_max == 0:
+    if levels == 0:
         return jnp.ones((*means.shape, 1), dtype=jnp.float32)
 
     if noise_std == 0.0:
-        rounded = jnp.round(jnp.clip(means, -d_max, d_max)).astype(jnp.int32)
-        return jax.nn.one_hot(rounded + d_max, n_bins)
+        rounded = jnp.round(jnp.clip(means, -levels, levels)).astype(jnp.int32)
+        return jax.nn.one_hot(rounded + levels, n_bins)
 
-    k = jnp.arange(-d_max, d_max + 1, dtype=jnp.float32)  # (n_bins,)
+    k = jnp.arange(-levels, levels + 1, dtype=jnp.float32)  # (n_bins,)
     mu = means[..., None]  # (*grid, 1)
 
     edges_upper = (k + 0.5 - mu) / noise_std  # (*grid, n_bins)
@@ -75,18 +75,19 @@ class RFFGPField(AbstractField):
         1. GP sample gives mean displacement at each point (fixed per episode)
         2. sample_displacement adds Gaussian noise to mean
         3. Continuous value is clipped to [-d_max, d_max]
-        4. Arena uses u_int/v_int for discrete state transition
+        4. Arena applies the continuous (u, v) displacement directly (no rounding)
     """
 
     def __init__(
         self,
         config: GridConfig,
-        d_max: int,
+        d_max: float,
         sigma: float = 1.0,
         lengthscale: float = 1.0,
         nu: float = 2.5,
         num_features: int = 500,
         noise_std: float = 0.1,
+        disp_levels: Optional[int] = None,
     ):
         """Initialize RFF GP field.
 
@@ -98,8 +99,10 @@ class RFFGPField(AbstractField):
             nu: Matern smoothness parameter (commonly 0.5, 1.5, 2.5, or infinity for RBF).
             num_features: Number of random Fourier features (L). Higher = better approximation.
             noise_std: Standard deviation of observation noise added to GP samples.
+            disp_levels: Integer displacement resolution for analytical PMFs
+                (DP oracle). Defaults to ceil(d_max).
         """
-        super().__init__(config, d_max)
+        super().__init__(config, d_max, disp_levels=disp_levels)
 
         if sigma <= 0.0:
             raise ValueError(f"sigma must be positive, got {sigma}")
@@ -259,26 +262,25 @@ class RFFGPField(AbstractField):
     def _get_mean_at_position(
         self, position: GridPosition
     ) -> Tuple[float, Optional[float]]:
-        """Get precomputed GP mean displacement at a grid position.
+        """Get GP mean displacement at a (continuous) grid position.
+
+        Evaluates the GP directly at the continuous coordinate via
+        ``velocity_at_point`` so that fractional positions are supported. At
+        integer positions this matches the precomputed grid values exactly
+        (both apply the same RFF formula).
 
         Args:
-            position: Grid position (1-indexed).
+            position: Grid position (1-indexed, continuous).
 
         Returns:
             (u_mean, v_mean) where v_mean is None for 2D.
         """
-        # Convert 1-indexed position to 0-indexed array index
-        i_idx = position.i - 1
-        j_idx = position.j - 1
-
         if self.ndim == 2:
-            u_mean = float(self._precomputed_u[i_idx, j_idx])
-            return (u_mean, None)
+            u_mean, _ = self.velocity_at_point(position.i, position.j)
+            return (float(u_mean), None)
         else:
-            k_idx = position.k - 1
-            u_mean = float(self._precomputed_u[i_idx, j_idx, k_idx])
-            v_mean = float(self._precomputed_v[i_idx, j_idx, k_idx])
-            return (u_mean, v_mean)
+            u_mean, v_mean = self.velocity_at_point(position.i, position.j, position.k)
+            return (float(u_mean), float(v_mean))
 
     def velocity_at_point(
         self, x: float, y: float, z: Optional[float] = None
@@ -392,37 +394,38 @@ class RFFGPField(AbstractField):
             - 3D: shape (2*d_max+1, 2*d_max+1), entry [i,j] = P(u=i-d_max, v=j-d_max)
         """
         u_mean, v_mean = self._get_mean_at_position(position)
+        L = self.disp_levels
 
         def compute_1d_pmf(mu: float) -> jnp.ndarray:
             """Compute 1D clipped PMF for a single component using JAX."""
-            if self.d_max == 0:
+            if L == 0:
                 return jnp.ones(1, dtype=jnp.float32)
 
-            k_values = jnp.arange(-self.d_max, self.d_max + 1)
+            k_values = jnp.arange(-L, L + 1)
             sigma_noise = self.noise_std
 
             if sigma_noise == 0.0:
-                clipped = float(np.clip(mu, -self.d_max, self.d_max))
+                clipped = float(np.clip(mu, -L, L))
                 rounded = int(round(clipped))
                 one_hot = jnp.zeros_like(k_values, dtype=jnp.float32)
-                return one_hot.at[rounded + self.d_max].set(1.0)
+                return one_hot.at[rounded + L].set(1.0)
 
             pmf = jnp.zeros_like(k_values, dtype=jnp.float32)
 
-            # Left boundary: P(U_obs < -d_max + 0.5)
-            left_boundary = jax_norm.cdf((-self.d_max + 0.5 - mu) / sigma_noise)
+            # Left boundary: P(U_obs < -L + 0.5)
+            left_boundary = jax_norm.cdf((-L + 0.5 - mu) / sigma_noise)
             pmf = pmf.at[0].set(left_boundary)
 
             # Interior bins: P(k-0.5 <= U_obs < k+0.5)
-            if self.d_max > 0:
-                interior_k = jnp.arange(-self.d_max + 1, self.d_max)
+            if L > 0:
+                interior_k = jnp.arange(-L + 1, L)
                 upper = (interior_k + 0.5 - mu) / sigma_noise
                 lower = (interior_k - 0.5 - mu) / sigma_noise
                 interior_pmf = jax_norm.cdf(upper) - jax_norm.cdf(lower)
                 pmf = pmf.at[1:-1].set(interior_pmf.astype(jnp.float32))
 
-            # Right boundary: P(U_obs >= d_max - 0.5)
-            right_boundary = 1.0 - jax_norm.cdf((self.d_max - 0.5 - mu) / sigma_noise)
+            # Right boundary: P(U_obs >= L - 0.5)
+            right_boundary = 1.0 - jax_norm.cdf((L - 0.5 - mu) / sigma_noise)
             pmf = pmf.at[-1].set(right_boundary)
             return pmf
 
@@ -444,12 +447,12 @@ class RFFGPField(AbstractField):
             - 3D: shape (n_x, n_y, n_z, 2*d_max+1, 2*d_max+1)
         """
         if self.ndim == 2:
-            return _compute_1d_pmf_grid(self._precomputed_u, self.d_max, self.noise_std)
+            return _compute_1d_pmf_grid(self._precomputed_u, self.disp_levels, self.noise_std)
         else:
             pmf_u = _compute_1d_pmf_grid(
-                self._precomputed_u, self.d_max, self.noise_std
+                self._precomputed_u, self.disp_levels, self.noise_std
             )
             pmf_v = _compute_1d_pmf_grid(
-                self._precomputed_v, self.d_max, self.noise_std
+                self._precomputed_v, self.disp_levels, self.noise_std
             )
             return pmf_u[..., :, None] * pmf_v[..., None, :]

@@ -293,6 +293,7 @@ class DPAgent(Agent):
         # Populated by plan()
         self._policy: Optional[jnp.ndarray] = None  # (H, *grid_shape)
         self._ndim: Optional[int] = None
+        self._grid_shape: Optional[tuple] = None
         self._step_t: int = 0
 
     # ------------------------------------------------------------------
@@ -319,9 +320,12 @@ class DPAgent(Agent):
             Episode horizon H (number of steps).
         """
         cfg: GridConfig = arena.config
-        d_max = arena.field.d_max
-        z_max = arena.actor.z_max
+        # Integer displacement resolutions for the discretized transition model.
+        # Positions/displacements are continuous at runtime; DP discretizes them.
+        d_levels = arena.field.disp_levels
+        z_levels = arena.actor.ctrl_levels
         self._ndim = cfg.ndim
+        self._grid_shape = cfg.shape  # for clamping rounded observations to cells
 
         reward = arena.reward_fn.compute_grid(cfg)
         field_pmf = arena.field.get_displacement_pmf_grid()
@@ -339,12 +343,12 @@ class DPAgent(Agent):
         if cfg.ndim == 2:
             self._policy = _backward_induction_2d(
                 reward, field_pmf, actor_pmf,
-                horizon, d_max, z_max, arena.boundary_mode,
+                horizon, d_levels, z_levels, arena.boundary_mode,
             )
         else:
             self._policy = _backward_induction_3d(
                 reward, field_pmf, actor_pmf,
-                horizon, d_max, z_max, arena.boundary_mode,
+                horizon, d_levels, z_levels, arena.boundary_mode,
             )
 
         self._step_t = 0
@@ -361,15 +365,20 @@ class DPAgent(Agent):
             )
 
         # Observation layout: [i, j, (k,) u, (v)]
-        # Positions are 1-indexed in the observation; policy is 0-indexed.
+        # Positions are continuous and 1-indexed; the policy table is discrete and
+        # 0-indexed, so round each coordinate to the nearest cell and clamp.
+        def _cell(value: float, axis: int) -> int:
+            idx = int(round(float(value))) - 1
+            return max(0, min(idx, self._grid_shape[axis] - 1))
+
         if self._ndim == 2:
-            i_idx = int(observation[0]) - 1
-            j_idx = int(observation[1]) - 1
+            i_idx = _cell(observation[0], 0)
+            j_idx = _cell(observation[1], 1)
             action = int(self._policy[self._step_t, i_idx, j_idx])
         else:
-            i_idx = int(observation[0]) - 1
-            j_idx = int(observation[1]) - 1
-            k_idx = int(observation[2]) - 1
+            i_idx = _cell(observation[0], 0)
+            j_idx = _cell(observation[1], 1)
+            k_idx = _cell(observation[2], 2)
             action = int(self._policy[self._step_t, i_idx, j_idx, k_idx])
 
         return action

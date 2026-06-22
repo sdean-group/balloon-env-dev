@@ -396,10 +396,12 @@ def test_field_rejects_invalid_d_max(d_max, match):
 
 
 @pytest.mark.parametrize(
-    ("d_max",),
-    [(2.5,), (1.7,)],
+    ("d_max", "expected_levels"),
+    [(2.5, 3), (1.7, 2), (2.0, 2), (0.4, 1)],
 )
-def test_field_rejects_non_integer_d_max(d_max):
+def test_field_accepts_float_d_max(d_max, expected_levels):
+    """Float d_max is valid (continuous clip bound); disp_levels = ceil(d_max)."""
     config = GridConfig.create(n_x=5, n_y=5)
-    with pytest.raises(ValueError, match="d_max must be an integer"):
-        SimpleField(config, d_max=d_max)
+    field = SimpleField(config, d_max=d_max)
+    assert field.d_max == pytest.approx(d_max)
+    assert field.disp_levels == expected_levels

@@ -233,8 +233,10 @@ class APSSPAgent(Agent):
                 "APSSPAgent currently only supports 2D environments."
             )
 
-        d_max = arena.field.d_max
-        z_max = arena.actor.z_max
+        # Integer displacement resolutions for the discretized transition model.
+        # Positions/displacements are continuous at runtime; AP-SSP discretizes them.
+        d_max = arena.field.disp_levels
+        z_max = arena.actor.ctrl_levels
         self._ndim = cfg.ndim
 
         field_pmf = arena.field.get_displacement_pmf_grid()
@@ -289,7 +291,11 @@ class APSSPAgent(Agent):
         """Look up the expected cost to reach target from pos."""
         if self._cost_table is None:
             raise RuntimeError("Agent must be planned first.")
-        return float(self._cost_table[pos.i - 1, pos.j - 1, target.i - 1, target.j - 1])
+        i = int(round(float(pos.i))) - 1
+        j = int(round(float(pos.j))) - 1
+        gi = int(round(float(target.i))) - 1
+        gj = int(round(float(target.j))) - 1
+        return float(self._cost_table[i, j, gi, gj])
 
     def set_target(self, target: GridPosition) -> None:
         """Set the target position for the inner routine."""
@@ -301,10 +307,12 @@ class APSSPAgent(Agent):
         if self.target_position is None:
             raise RuntimeError("Target position must be set before stepping.")
 
-        i_idx = int(observation[0]) - 1
-        j_idx = int(observation[1]) - 1
-        g_i = self.target_position.i - 1
-        g_j = self.target_position.j - 1
+        # Continuous positions -> nearest integer cell (clamped to the table).
+        n_x, n_y = self._policy_table.shape[0], self._policy_table.shape[1]
+        i_idx = max(0, min(int(round(float(observation[0]))) - 1, n_x - 1))
+        j_idx = max(0, min(int(round(float(observation[1]))) - 1, n_y - 1))
+        g_i = max(0, min(int(round(float(self.target_position.i))) - 1, n_x - 1))
+        g_j = max(0, min(int(round(float(self.target_position.j))) - 1, n_y - 1))
 
         return int(self._policy_table[i_idx, j_idx, g_i, g_j])
 

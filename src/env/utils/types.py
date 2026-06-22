@@ -17,20 +17,23 @@ from dataclasses import asdict
 
 
 class GridPosition(NamedTuple):
-    """Grid position coordinates (1-indexed).
-    
+    """Grid position coordinates (continuous, 1-indexed domain).
+
+    Positions are continuous floats over the domain [1, n] on each axis;
+    integer values are valid but no rounding is applied to the live dynamics.
+
     Supports both 2D and 3D settings:
     - 3D: (i, j, k) where k is controllable axis, (i, j) are ambient
     - 2D: (i, j, None) where j is controllable axis, (i,) is ambient
-    
+
     Args:
         i: First ambient axis coordinate [1, n_x]
         j: Second ambient (3D) or controllable (2D) axis [1, n_y]
         k: Controllable axis for 3D [1, n_z], None for 2D
     """
-    i: int  # Ambient axis 1 (always present)
-    j: int  # Ambient axis 2 (3D) OR controllable axis (2D)
-    k: Optional[int] = None  # Controllable axis (3D only)
+    i: float  # Ambient axis 1 (always present)
+    j: float  # Ambient axis 2 (3D) OR controllable axis (2D)
+    k: Optional[float] = None  # Controllable axis (3D only)
     
     @property
     def ndim(self) -> int:

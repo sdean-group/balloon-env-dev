@@ -137,13 +137,13 @@ class GridArena(AbstractArena):
         self.last_position = self.position
         
         if self.ndim == 3:
-            # 3D: update (i, j) from field, keep k
-            new_i = self.position.i + displacement_obs.u_int
-            new_j = self.position.j + displacement_obs.v_int
+            # 3D: update (i, j) from field (continuous), keep k
+            new_i = self.position.i + displacement_obs.u
+            new_j = self.position.j + displacement_obs.v
             self.position = GridPosition(new_i, new_j, self.position.k)
         else:
-            # 2D: update (i,) from field, keep j
-            new_i = self.position.i + displacement_obs.u_int
+            # 2D: update (i,) from field (continuous), keep j
+            new_i = self.position.i + displacement_obs.u
             self.position = GridPosition(new_i, self.position.j, None)
         
         # 3. Apply controllable action
@@ -281,22 +281,23 @@ class GridArena(AbstractArena):
         out_of_bounds = False
         
         if self.boundary_mode == 'clip':
-            new_i = int(max(1, min(position.i, self.config.n_x)))
-            new_j = int(max(1, min(position.j, self.config.n_y)))
-            new_k = int(max(1, min(position.k, self.config.n_z)))
-            
+            new_i = float(max(1.0, min(position.i, self.config.n_x)))
+            new_j = float(max(1.0, min(position.j, self.config.n_y)))
+            new_k = float(max(1.0, min(position.k, self.config.n_z)))
+
             out_of_bounds = (
-                new_i != position.i or 
-                new_j != position.j or 
+                new_i != position.i or
+                new_j != position.j or
                 new_k != position.k
             )
             position = GridPosition(new_i, new_j, new_k)
-            
+
         elif self.boundary_mode == 'periodic':
-            # Wrap around on ambient axes (i, j), clip on controllable (k)
+            # Wrap around on ambient axes (i, j) over the domain [1, n], clip on
+            # controllable (k). Float modulo keeps the result in [1, n).
             new_i = ((position.i - 1) % self.config.n_x) + 1
             new_j = ((position.j - 1) % self.config.n_y) + 1
-            new_k = int(max(1, min(position.k, self.config.n_z)))
+            new_k = float(max(1.0, min(position.k, self.config.n_z)))
             position = GridPosition(new_i, new_j, new_k)
             
         elif self.boundary_mode == 'terminal':
@@ -315,16 +316,17 @@ class GridArena(AbstractArena):
         out_of_bounds = False
         
         if self.boundary_mode == 'clip':
-            new_i = int(max(1, min(position.i, self.config.n_x)))
-            new_j = int(max(1, min(position.j, self.config.n_y)))
-            
+            new_i = float(max(1.0, min(position.i, self.config.n_x)))
+            new_j = float(max(1.0, min(position.j, self.config.n_y)))
+
             out_of_bounds = (new_i != position.i or new_j != position.j)
             position = GridPosition(new_i, new_j, None)
-            
+
         elif self.boundary_mode == 'periodic':
-            # Wrap around on ambient axis (i), clip on controllable (j)
+            # Wrap around on ambient axis (i) over the domain [1, n], clip on
+            # controllable (j). Float modulo keeps the result in [1, n).
             new_i = ((position.i - 1) % self.config.n_x) + 1
-            new_j = int(max(1, min(position.j, self.config.n_y)))
+            new_j = float(max(1.0, min(position.j, self.config.n_y)))
             position = GridPosition(new_i, new_j, None)
             
         elif self.boundary_mode == 'terminal':
