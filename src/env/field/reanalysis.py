@@ -43,6 +43,7 @@ class ReanalysisFlowField(FlowField):
         *,
         scale: float = 1.0,
         slice_mode: str = "random",
+        fixed_index: int = 0,
     ):
         """Initialize the reanalysis field.
 
@@ -51,6 +52,7 @@ class ReanalysisFlowField(FlowField):
             data_path: Path to the ``.npz`` ERA5 cache (see :mod:`era5_data`).
             scale: Multiplier converting native units (m/s) to grid cells/step.
             slice_mode: ``"random"`` (sample a time slice per reset) or ``"fixed"`` (slice 0).
+            fixed_index: Cache time index selected when ``slice_mode="fixed"``.
 
         Raises:
             ValueError: if ``slice_mode`` is invalid, or if the data rank/shape does not
@@ -85,6 +87,12 @@ class ReanalysisFlowField(FlowField):
         # Apply unit scaling once, up front, so velocity_at / velocity_field are scale-free.
         self._winds = winds * self._scale
         self._T = self._winds.shape[0]
+        if not 0 <= fixed_index < self._T:
+            raise ValueError(
+                f"fixed_index must be in [0, {self._T - 1}], got {fixed_index}"
+            )
+        self._fixed_index = int(fixed_index)
+        self.current_time_index: Optional[int] = None
 
         # Interpolation axes over the 1-indexed continuous domain [1, n] on each grid axis,
         # matching GridPosition's convention.
@@ -100,10 +108,11 @@ class ReanalysisFlowField(FlowField):
     def reset(self, rng_key: jnp.ndarray) -> None:
         """Select this episode's time slice and (re)build the interpolators."""
         if self._slice_mode == "fixed":
-            t = 0
+            t = self._fixed_index
         else:
             t = int(jax.random.randint(rng_key, (), 0, self._T))
 
+        self.current_time_index = t
         sl = self._winds[t]  # (n_x, n_y[, n_z], C)
         self._current_slice = sl
         # bounds_error=False, fill_value=None -> linear extrapolation at the edges, so a

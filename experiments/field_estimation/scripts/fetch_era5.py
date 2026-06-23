@@ -32,6 +32,7 @@ Examples
 
 import argparse
 import os
+import tempfile
 from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -129,9 +130,10 @@ def fetch_from_cds(
     west, south, east, north = region
     dataset = "reanalysis-era5-pressure-levels"
     if ndim == 3 and not levels:
-        levels = [50, 70, 100, 150, 200, 250, 300]
+        levels = [300, 250, 200, 150, 100, 70, 50]
     if ndim == 2:
         levels = [int(levels[0])] if levels else [200]  # a single level for the 2D slice
+    levels = sorted((int(level) for level in levels), reverse=True)
 
     request = {
         "product_type": "reanalysis",
@@ -143,33 +145,60 @@ def fetch_from_cds(
         "time": list(times),
         # CDS area order is North, West, South, East.
         "area": [north, west, south, east],
-        "format": "netcdf",
+        "data_format": "netcdf",
+        "download_format": "unarchived",
     }
 
-    tmp = ".era5_download.nc"
-    cdsapi.Client().retrieve(dataset, request, tmp)
-    ds = xr.open_dataset(tmp)
+    with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as handle:
+        tmp = handle.name
+    try:
+        client_key = os.environ.get("CDSAPI_KEY")
+        if client_key:
+            client = cdsapi.Client(
+                url=os.environ.get(
+                    "CDSAPI_URL", "https://cds.climate.copernicus.eu/api"
+                ),
+                key=client_key,
+            )
+        else:
+            client = cdsapi.Client()
+        client.retrieve(dataset, request, tmp)
+        ds = xr.open_dataset(tmp)
+        rename = {}
+        if "pressure_level" in ds.dims:
+            rename["pressure_level"] = "level"
+        if "valid_time" in ds.dims:
+            rename["valid_time"] = "time"
+        if rename:
+            ds = ds.rename(rename)
 
-    # ERA5 latitude is descending; RegularGridInterpolator needs ascending source axes.
-    ds = ds.sortby("latitude").sortby("longitude").sortby("level")
-    src_lat = ds["latitude"].values
-    src_lon = ds["longitude"].values
-    src_lvl = ds["level"].values
+        # ERA5 latitude is descending; interpolation axes must be ascending.
+        ds = ds.sortby("latitude").sortby("longitude").sortby("level")
+        src_lat = ds["latitude"].values
+        src_lon = ds["longitude"].values
+        src_lvl = ds["level"].values
 
-    # Target env-grid coordinates at cell centres.
-    tgt_lon = np.linspace(west, east, grid_shape[0])
-    tgt_lat = np.linspace(south, north, grid_shape[1])
-    times_arr = ds["valid_time"].values if "valid_time" in ds else ds["time"].values
-    T = len(times_arr)
+        # Target env-grid coordinates at cell centres.
+        tgt_lon = np.linspace(west, east, grid_shape[0])
+        tgt_lat = np.linspace(south, north, grid_shape[1])
+        times_arr = ds["time"].values
+        T = len(times_arr)
 
-    winds = _resample_to_grid(ds, grid_shape, src_lvl, src_lat, src_lon,
-                              tgt_lon, tgt_lat, levels, T, ndim)
-    ds.close()
-    os.remove(tmp)
+        winds, pressure_by_k = _resample_to_grid(
+            ds, grid_shape, src_lvl, src_lat, src_lon,
+            tgt_lon, tgt_lat, levels, T, ndim,
+        )
+        ds.close()
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
     meta = dict(
         units="m/s", source="era5-cds", region=dict(west=west, south=south, east=east, north=north),
         levels=[int(p) for p in levels], date=date, times=list(times),
+        vertical_coordinate="pressure_hpa",
+        pressure_hpa_by_k=pressure_by_k,
+        vertical_order="k increases with altitude (pressure decreases)",
         timestamps=[str(t) for t in times_arr], n=grid_shape + (None,) * (3 - ndim),
     )
     return winds.astype(np.float64), meta
@@ -177,7 +206,7 @@ def fetch_from_cds(
 
 def _resample_to_grid(ds, grid_shape, src_lvl, src_lat, src_lon,
                       tgt_lon, tgt_lat, levels, T, ndim):
-    """Linear-resample each timestep of the ERA5 dataset onto the env grid."""
+    """Resample ERA5, using log-pressure with increasing ``k`` = increasing altitude."""
     from scipy.interpolate import RegularGridInterpolator
 
     n_components = 1 if ndim == 2 else 2
@@ -192,20 +221,38 @@ def _resample_to_grid(ds, grid_shape, src_lvl, src_lat, src_lon,
             rgi = RegularGridInterpolator((src_lat, src_lon), field,
                                           method="linear", bounds_error=False, fill_value=None)
             winds[t, ..., 0] = rgi(pts).reshape(grid_shape)
+        pressure_by_k = [int(levels[0])]
     else:
-        tgt_lvl = np.linspace(src_lvl.min(), src_lvl.max(), grid_shape[2])
-        ZZ, XX, YY = np.meshgrid(tgt_lvl, tgt_lon, tgt_lat, indexing="ij")
-        # interpolation order matches source axes (level, lat, lon)
+        # Pressure falls as altitude rises. k=1 is the highest pressure (lowest
+        # altitude), and k=n_z is the lowest pressure (highest altitude).
+        tgt_lvl = pressure_levels_for_grid(levels, grid_shape[2])
+        src_log_pressure = np.log(np.asarray(src_lvl, dtype=np.float64))
+        tgt_log_pressure = np.log(tgt_lvl)
+        ZZ, XX, YY = np.meshgrid(tgt_log_pressure, tgt_lon, tgt_lat, indexing="ij")
+        # interpolation order matches source axes (log-pressure, lat, lon)
         pts = np.column_stack([ZZ.ravel(), YY.ravel(), XX.ravel()])
         for t in range(T):
             for c, var in enumerate(comp_vars):
                 field = ds[var].isel(time=t).values  # (level, lat, lon)
-                rgi = RegularGridInterpolator((src_lvl, src_lat, src_lon), field,
+                rgi = RegularGridInterpolator((src_log_pressure, src_lat, src_lon), field,
                                               method="linear", bounds_error=False, fill_value=None)
                 # reshape from (n_z, n_x, n_y) back to (n_x, n_y, n_z)
                 vals = rgi(pts).reshape(grid_shape[2], grid_shape[0], grid_shape[1])
                 winds[t, ..., c] = np.transpose(vals, (1, 2, 0))
-    return winds
+        pressure_by_k = [float(level) for level in tgt_lvl]
+    return winds, pressure_by_k
+
+
+def pressure_levels_for_grid(levels: Sequence[int], n_z: int) -> np.ndarray:
+    """Map env ``k`` to pressure, ordered from low to high physical altitude."""
+    requested = np.asarray(sorted(levels, reverse=True), dtype=np.float64)
+    if requested.size == 0 or np.any(requested <= 0):
+        raise ValueError("pressure levels must be positive")
+    if n_z <= 0:
+        raise ValueError("n_z must be positive")
+    if n_z == requested.size:
+        return requested
+    return np.geomspace(requested.max(), requested.min(), n_z)
 
 
 # -------------------------------------------------------------------- open-meteo source

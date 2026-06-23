@@ -9,6 +9,7 @@ from .flow_field import FlowField, unique_fields
 from .composite import SumField, ScaledField, ZeroField
 from .synthetic import SyntheticFlowField
 from .reanalysis import ReanalysisFlowField
+from .data_driven import DataDrivenFlowField
 from .simple_field import ConstantDriftField, UniformDriftField
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     'ZeroField',
     'SyntheticFlowField',
     'ReanalysisFlowField',
+    'DataDrivenFlowField',
     'ConstantDriftField',
     'UniformDriftField',
 ]

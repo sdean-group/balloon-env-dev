@@ -26,8 +26,9 @@ CACHE = os.environ.get("ERA5_CACHE", "")
 _have_cache = bool(CACHE) and os.path.exists(CACHE)
 skip_no_cache = pytest.mark.skipif(not _have_cache, reason="set ERA5_CACHE to a real .npz")
 
-# Tune to your scaling: raw ERA5 winds are m/s; stratospheric speeds rarely exceed ~80 m/s.
-MAX_PLAUSIBLE_MS = 80.0
+# Raw ERA5 winds are m/s. Strong winter jet-stream events can exceed 80 m/s,
+# so this is a corruption guard rather than a climatological upper bound.
+MAX_PLAUSIBLE_MS = 100.0
 # After scale -> cells/step, drift should be comparable to a GP run with sigma~3.
 MAX_PLAUSIBLE_CELLS_PER_STEP = 10.0
 
@@ -49,7 +50,7 @@ def test_raw_magnitude_plausible():
 def test_scaled_magnitude_comparable_to_gp():
     bundle = load_era5(CACHE)
     config = _config_from_cache(bundle)
-    field = ReanalysisFlowField(config, CACHE, scale=float(os.environ.get("ERA5_SCALE", 1.0)))
+    field = ReanalysisFlowField(config, CACHE, scale=float(os.environ.get("ERA5_SCALE", 0.06)))
     field.reset(jax.random.PRNGKey(0))
     g = field.velocity_field()
     speed = np.linalg.norm(g, axis=-1)

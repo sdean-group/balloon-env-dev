@@ -109,6 +109,24 @@ def test_fixed_mode_always_slice_zero(affine_npz_2d):
         assert u == pytest.approx(affine_npz_2d["truth"](1, 1, 0))   # t=0 always
 
 
+def test_fixed_mode_can_select_explicit_slice(affine_npz_2d):
+    case = affine_npz_2d
+    config = GridConfig.create(case["n_x"], case["n_y"])
+    field = ReanalysisFlowField(
+        config,
+        case["path"],
+        slice_mode="fixed",
+        fixed_index=1,
+    )
+
+    field.reset(KEY)
+
+    assert field.current_time_index == 1
+    assert field.velocity_at(GridPosition(1.0, 1.0))[0] == pytest.approx(
+        case["truth"](1.0, 1.0, 1)
+    )
+
+
 # ----------------------------------------------------------- 6. realization diversity
 def test_random_mode_visits_multiple_slices(affine_npz_2d):
     f = _field_2d(affine_npz_2d, slice_mode="random")
