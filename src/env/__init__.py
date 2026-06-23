@@ -6,6 +6,8 @@ from .arena.reward import RewardFunction, NavigationReward
 from .field import (
     FlowField,
     SyntheticFlowField,
+    ReanalysisFlowField,
+    DataDrivenFlowField,
     ConstantDriftField,
     UniformDriftField,
     SumField,
@@ -38,6 +40,8 @@ __all__ = [
     # Field
     'FlowField',
     'SyntheticFlowField',
+    'ReanalysisFlowField',
+    'DataDrivenFlowField',
     'ConstantDriftField',
     'UniformDriftField',
     'SumField',
