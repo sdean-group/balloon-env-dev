@@ -45,10 +45,12 @@ class ConstantDriftField(FlowField):
     def reset(self, rng_key: jnp.ndarray) -> None:
         pass
 
-    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
-        return (self._u, self._v)
+    def velocity_at(
+        self, position: GridPosition, t: float = 0.0
+    ) -> Tuple[float, Optional[float]]:
+        return (self._u, self._v)  # time-invariant: t ignored
 
-    def velocity_field(self) -> np.ndarray:
+    def velocity_field(self, t: float = 0.0) -> np.ndarray:
         if self.ndim == 3:
             field = np.empty((self.config.n_x, self.config.n_y, self.config.n_z, 2))
             field[..., 0] = self._u
@@ -95,12 +97,14 @@ class UniformDriftField(FlowField):
             )
             self._v = None
 
-    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
+    def velocity_at(
+        self, position: GridPosition, t: float = 0.0
+    ) -> Tuple[float, Optional[float]]:
         if self._u is None:
             raise RuntimeError("UniformDriftField.reset() must be called before velocity_at()")
-        return (self._u, self._v)
+        return (self._u, self._v)  # time-invariant: t ignored
 
-    def velocity_field(self) -> np.ndarray:
+    def velocity_field(self, t: float = 0.0) -> np.ndarray:
         if self._u is None:
             raise RuntimeError("UniformDriftField.reset() must be called before velocity_field()")
         if self.ndim == 3:

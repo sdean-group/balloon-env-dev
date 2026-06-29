@@ -37,12 +37,31 @@ class FlowField(ABC):
         """Draw one realization of the field (called once per episode)."""
 
     @abstractmethod
-    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
-        """Deterministic (u, v) at a continuous position. v is None in 2D."""
+    def velocity_at(
+        self, position: GridPosition, t: float = 0.0
+    ) -> Tuple[float, Optional[float]]:
+        """Deterministic (u, v) at a continuous position and episode time. v is None in 2D.
 
-    def velocity_field(self) -> Optional[np.ndarray]:
-        """(n_x, n_y[, n_z], ndim) grid of velocities -- for plotting. Optional."""
+        ``t`` is elapsed simulation steps since :meth:`reset` (a float, starting at 0),
+        supplied by the arena. Time-invariant fields ignore it; the default ``t=0.0``
+        keeps the field a pure spatial source for callers that don't track time.
+        """
+
+    def velocity_field(self, t: float = 0.0) -> Optional[np.ndarray]:
+        """(n_x, n_y[, n_z], ndim) grid of velocities at episode time ``t`` -- for plotting.
+
+        Optional; defaults to None. ``t`` defaults to 0.0 so static callers are unaffected.
+        """
         return None
+
+    @property
+    def time_varying(self) -> bool:
+        """Whether ``velocity_at`` actually depends on ``t``.
+
+        Defaults to False (a frozen-after-reset spatial source). Fields that evolve
+        within an episode override this to True so the arena/renderer/tests can tell.
+        """
+        return False
 
     def sub_fields(self) -> Tuple["FlowField", ...]:
         """Child fields this field is composed from (empty for leaf sources).

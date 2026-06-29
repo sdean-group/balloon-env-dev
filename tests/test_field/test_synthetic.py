@@ -189,3 +189,94 @@ def test_divergence_free_streamfunction(case: dict):
         # which scales with the (potentially large) second-derivative magnitudes.
         scale = abs(du_dx) + abs(dv_dy) + 1.0
         assert abs(divergence) < 1e-3 * scale
+
+
+# ---------------------------------------------------------------------------
+# Temporal axis (lengthscale_t): the field evolves WITHIN an episode.
+# ---------------------------------------------------------------------------
+
+def _temporal_field(ndim: int = 2, lengthscale_t=5.0, seed: int = 7) -> SyntheticFlowField:
+    n_z = None if ndim == 2 else 6
+    config = GridConfig.create(10, 9, n_z)
+    field = SyntheticFlowField(
+        config=config, sigma=2.0, lengthscale=4.0, nu=2.5,
+        num_features=128, lengthscale_t=lengthscale_t,
+    )
+    field.reset(jax.random.PRNGKey(seed))
+    return field
+
+
+def test_lengthscale_t_validated():
+    config = GridConfig.create(8, 7)
+    with pytest.raises(ValueError, match="lengthscale_t"):
+        SyntheticFlowField(config=config, lengthscale_t=0.0)
+
+
+def test_static_field_is_time_invariant():
+    """Without lengthscale_t the field ignores t (back-compat) and reports time_varying=False."""
+    config = GridConfig.create(10, 9)
+    field = SyntheticFlowField(config=config, sigma=2.0, lengthscale=4.0, num_features=128)
+    field.reset(jax.random.PRNGKey(3))
+    assert field.time_varying is False
+    p = GridPosition(4.3, 5.1, None)
+    u0, _ = field.velocity_at(p, t=0.0)
+    u9, _ = field.velocity_at(p, t=9.0)
+    assert u0 == u9
+
+
+@pytest.mark.parametrize("ndim", [2, 3])
+def test_temporal_field_changes_over_time(ndim: int):
+    """A field with lengthscale_t actually evolves: velocity at a fixed point moves with t."""
+    field = _temporal_field(ndim=ndim)
+    assert field.time_varying is True
+    p = GridPosition(4.3, 5.1, None if ndim == 2 else 3.2)
+    u0 = field.velocity_at(p, t=0.0)[0]
+    u_late = field.velocity_at(p, t=40.0)[0]
+    assert abs(u_late - u0) > 1e-3
+
+
+@pytest.mark.parametrize("ndim", [2, 3])
+def test_temporal_field_continuous_in_time(ndim: int):
+    """Small steps in t produce small changes (the temporal GP is smooth)."""
+    field = _temporal_field(ndim=ndim)
+    p = GridPosition(4.3, 5.1, None if ndim == 2 else 3.2)
+    a = field.velocity_at(p, t=10.0)[0]
+    b = field.velocity_at(p, t=10.001)[0]
+    assert abs(b - a) < 1e-2
+
+
+def test_temporal_field_deterministic_in_key_and_t():
+    """Same key + same t => identical field; t=0 matches the cached reset grid."""
+    f1 = _temporal_field(seed=11)
+    f2 = _temporal_field(seed=11)
+    p = GridPosition(4.3, 5.1, None)
+    assert f1.velocity_at(p, t=17.0) == f2.velocity_at(p, t=17.0)
+    # velocity_field(t=0) reuses the cached grid; recomputing at 0 must agree.
+    np.testing.assert_allclose(f1.velocity_field(0.0), f1._grid_velocity(0.0)[0][:, :, None])
+
+
+def test_temporal_field_velocity_field_evolves():
+    field = _temporal_field(ndim=2)
+    grid0 = field.velocity_field(0.0)
+    grid_late = field.velocity_field(30.0)
+    assert grid0.shape == grid_late.shape
+    assert not np.allclose(grid0, grid_late)
+
+
+@pytest.mark.parametrize("seed", [101, 102, 103])
+def test_temporal_3d_divergence_free_at_nonzero_t(seed: int):
+    """The 3D streamfunction stays divergence-free at t>0 (time only rides in theta)."""
+    field = _temporal_field(ndim=3, seed=seed)
+    t = 23.0
+
+    def u_fn(x, y, z):
+        return field.velocity_at_point(x, y, z, t=t)[0]
+
+    def v_fn(x, y, z):
+        return field.velocity_at_point(x, y, z, t=t)[1]
+
+    for x, y, z in [(2.25, 3.75, 2.5), (6.0, 4.0, 4.5)]:
+        du_dx = float(jax.grad(u_fn, argnums=0)(x, y, z))
+        dv_dy = float(jax.grad(v_fn, argnums=1)(x, y, z))
+        scale = abs(du_dx) + abs(dv_dy) + 1.0
+        assert abs(du_dx + dv_dy) < 1e-3 * scale

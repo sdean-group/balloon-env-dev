@@ -164,7 +164,9 @@ class NavigationRenderer(Renderer):
         if self.show_grid_points:
             self._add_grid_points(fig)
         if self.show_field:
-            self._add_field(fig)
+            # Draw the field at the current frame's time so a time-varying field shows
+            # the weather as it is now, not its t=0 snapshot.
+            self._add_field(fig, float(current_state.step_count))
         
         self._add_target_vicinity(fig, current_state)
         self._add_target(fig, current_state)
@@ -213,13 +215,13 @@ class NavigationRenderer(Renderer):
         """Add subsampled grid points."""
         fig.add_trace(self._get_grid_points_trace())
     
-    def _add_field(self, fig: go.Figure):
-        """Add field mean displacement arrows."""
-        trace = self._get_field_trace()
+    def _add_field(self, fig: go.Figure, t: float = 0.0):
+        """Add field displacement arrows at episode time ``t``."""
+        trace = self._get_field_trace(t)
         if trace is not None:
             if isinstance(trace, list):
-                for t in trace:
-                    fig.add_trace(t)
+                for tr in trace:
+                    fig.add_trace(tr)
             else:
                 fig.add_trace(trace)
     
@@ -276,26 +278,32 @@ class NavigationRenderer(Renderer):
         self._cached_grid_trace = trace
         return trace
     
-    def _get_field_trace(self):
-        """Get field mean displacement as Plotly trace(s) (cached).
+    def _get_field_trace(self, t: float = 0.0):
+        """Get field displacement as Plotly trace(s) at episode time ``t``.
+
+        Cached for static fields; recomputed per call for time-varying fields.
         
         Returns:
             - 2D: List of Scatter traces from ff.create_quiver
             - 3D: Single Scatter3d trace of NaN-separated line-segment arrows
             - None if field not available or all arrows are zero
         """
-        if self._cached_field_trace is not None:
-            return self._cached_field_trace
-        
         if self.field is None:
             return None
-        
-        result = self._build_field_trace()
+
+        # A time-varying field's quiver depends on t, so it can't be cached across
+        # frames; a static field is drawn once and reused.
+        if getattr(self.field, "time_varying", False):
+            return self._build_field_trace(t)
+
+        if self._cached_field_trace is not None:
+            return self._cached_field_trace
+        result = self._build_field_trace(t)
         self._cached_field_trace = result
         return result
     
-    def _build_field_trace(self):
-        """Build field quiver arrows for 2D or 3D.
+    def _build_field_trace(self, t: float = 0.0):
+        """Build field quiver arrows for 2D or 3D at episode time ``t``.
         
         Shared pipeline: subsample grid -> get (u, v) vectors -> check magnitude -> render.
         Uses bulk field array when available, pointwise query as fallback.
@@ -316,7 +324,7 @@ class NavigationRenderer(Renderer):
             gx, gy = np.meshgrid(xs, ys, indexing='ij')
         
         # Get velocity vectors: prefer bulk array, fall back to pointwise
-        field_arr = self.field.velocity_field() if hasattr(self.field, 'velocity_field') else None
+        field_arr = self.field.velocity_field(t) if hasattr(self.field, 'velocity_field') else None
         if field_arr is not None:
             if is_3d:
                 u = field_arr[::s, ::s, ::s, 0].ravel()
@@ -333,7 +341,7 @@ class NavigationRenderer(Renderer):
             for idx, coords in enumerate(flat_coords):
                 pos = GridPosition(int(coords[0]), int(coords[1]),
                                    int(coords[2]) if is_3d else None)
-                vel = self.field.velocity_at(pos)
+                vel = self.field.velocity_at(pos, t)
                 if vel is not None:
                     u[idx] = vel[0]
                     v[idx] = vel[1] if (len(vel) > 1 and vel[1] is not None) else 0.0

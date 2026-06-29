@@ -43,23 +43,29 @@ class SumField(FlowField):
         # No own randomness: children are reset by the arena's unique-field walk.
         pass
 
-    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
-        ua, va = self.a.velocity_at(position)
-        ub, vb = self.b.velocity_at(position)
+    def velocity_at(
+        self, position: GridPosition, t: float = 0.0
+    ) -> Tuple[float, Optional[float]]:
+        ua, va = self.a.velocity_at(position, t)
+        ub, vb = self.b.velocity_at(position, t)
         u = ua + ub
         if va is None or vb is None:
             return (u, None)
         return (u, va + vb)
 
-    def velocity_field(self) -> Optional[np.ndarray]:
-        fa = self.a.velocity_field()
-        fb = self.b.velocity_field()
+    def velocity_field(self, t: float = 0.0) -> Optional[np.ndarray]:
+        fa = self.a.velocity_field(t)
+        fb = self.b.velocity_field(t)
         if fa is None or fb is None:
             return None
         return fa + fb
 
     def sub_fields(self) -> Tuple[FlowField, ...]:
         return (self.a, self.b)
+
+    @property
+    def time_varying(self) -> bool:
+        return self.a.time_varying or self.b.time_varying
 
 
 class ScaledField(FlowField):
@@ -73,20 +79,26 @@ class ScaledField(FlowField):
     def reset(self, rng_key: jnp.ndarray) -> None:
         pass
 
-    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
-        u, v = self.field.velocity_at(position)
+    def velocity_at(
+        self, position: GridPosition, t: float = 0.0
+    ) -> Tuple[float, Optional[float]]:
+        u, v = self.field.velocity_at(position, t)
         if v is None:
             return (self.scalar * u, None)
         return (self.scalar * u, self.scalar * v)
 
-    def velocity_field(self) -> Optional[np.ndarray]:
-        f = self.field.velocity_field()
+    def velocity_field(self, t: float = 0.0) -> Optional[np.ndarray]:
+        f = self.field.velocity_field(t)
         if f is None:
             return None
         return self.scalar * f
 
     def sub_fields(self) -> Tuple[FlowField, ...]:
         return (self.field,)
+
+    @property
+    def time_varying(self) -> bool:
+        return self.field.time_varying
 
 
 class ZeroField(FlowField):
@@ -98,12 +110,14 @@ class ZeroField(FlowField):
     def reset(self, rng_key: jnp.ndarray) -> None:
         pass
 
-    def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
+    def velocity_at(
+        self, position: GridPosition, t: float = 0.0
+    ) -> Tuple[float, Optional[float]]:
         if self.ndim == 3:
             return (0.0, 0.0)
         return (0.0, None)
 
-    def velocity_field(self) -> np.ndarray:
+    def velocity_field(self, t: float = 0.0) -> np.ndarray:
         if self.ndim == 3:
             return np.zeros((self.config.n_x, self.config.n_y, self.config.n_z, 2))
         return np.zeros((self.config.n_x, self.config.n_y, 1))
