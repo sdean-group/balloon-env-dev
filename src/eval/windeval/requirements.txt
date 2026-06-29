@@ -1,0 +1,6 @@
+cdsapi
+cfgrib
+eccodes
+xarray
+zarr>=3
+numpy

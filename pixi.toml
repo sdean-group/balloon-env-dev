@@ -18,6 +18,10 @@ scikit-learn = ">=1.5.0"
 cdsapi = ">=0.7.7,<0.8"
 xarray = ">=2026.4.0,<2027"
 netcdf4 = ">=1.7.4,<2"
+# wind-field eval harness (src/eval/windeval)
+zarr = ">=3"
+cfgrib = "*"
+eccodes = "*"
 
 [feature.dev.dependencies]
 pytest = ">=8.0.0"
