@@ -8,6 +8,7 @@ owns all dynamics (noise, clipping, displacement).
 from .flow_field import FlowField, unique_fields
 from .composite import SumField, ScaledField, ZeroField
 from .synthetic import SyntheticFlowField
+from .helmholtz import HelmholtzSyntheticFlowField, HelmholtzDataDrivenFlowField
 from .reanalysis import ReanalysisFlowField
 from .data_driven import DataDrivenFlowField
 from .simple_field import ConstantDriftField, UniformDriftField
@@ -19,6 +20,8 @@ __all__ = [
     'ScaledField',
     'ZeroField',
     'SyntheticFlowField',
+    'HelmholtzSyntheticFlowField',
+    'HelmholtzDataDrivenFlowField',
     'ReanalysisFlowField',
     'DataDrivenFlowField',
     'ConstantDriftField',

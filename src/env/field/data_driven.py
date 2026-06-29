@@ -1,4 +1,9 @@
-"""Data-driven wind source fitted with random Fourier feature GP regression."""
+"""Data-driven wind source fitted with random Fourier feature GP regression.
+
+This is a mean-field baseline for learning a smooth wind map from samples. It is
+not a full exact GP posterior over ERA5-conditioned fields; in particular, the
+RFF approximation here should not be treated as the final uncertainty model.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +25,8 @@ class DataDrivenFlowField(FlowField):
     regression. One independent output model is fitted per horizontal wind
     component while sharing the same spatial features. ``reset`` selects either
     the posterior mean or one coherent posterior weight sample for the episode.
+    Treat this as a baseline learned mean field, not as the final data-driven
+    posterior model.
     """
 
     def __init__(

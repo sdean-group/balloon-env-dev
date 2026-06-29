@@ -51,8 +51,9 @@ class ReanalysisFlowField(FlowField):
             config: Grid configuration; its shape must match the cached data.
             data_path: Path to the ``.npz`` ERA5 cache (see :mod:`era5_data`).
             scale: Multiplier converting native units (m/s) to grid cells/step.
-            slice_mode: ``"random"`` (sample a time slice per reset) or ``"fixed"`` (slice 0).
-            fixed_index: Cache time index selected when ``slice_mode="fixed"``.
+            slice_mode: ``"random"`` (sample a time slice per reset) or ``"fixed"``.
+            fixed_index: Cache time index selected when ``slice_mode="fixed"``. May be
+                fractional; adjacent cache slices are linearly interpolated.
 
         Raises:
             ValueError: if ``slice_mode`` is invalid, or if the data rank/shape does not
@@ -87,12 +88,12 @@ class ReanalysisFlowField(FlowField):
         # Apply unit scaling once, up front, so velocity_at / velocity_field are scale-free.
         self._winds = winds * self._scale
         self._T = self._winds.shape[0]
-        if not 0 <= fixed_index < self._T:
+        if not 0 <= fixed_index <= self._T - 1:
             raise ValueError(
                 f"fixed_index must be in [0, {self._T - 1}], got {fixed_index}"
             )
-        self._fixed_index = int(fixed_index)
-        self.current_time_index: Optional[int] = None
+        self._fixed_index = float(fixed_index)
+        self.current_time_index: Optional[float] = None
 
         # Interpolation axes over the 1-indexed continuous domain [1, n] on each grid axis,
         # matching GridPosition's convention.
@@ -100,7 +101,7 @@ class ReanalysisFlowField(FlowField):
             np.arange(1, n + 1, dtype=np.float64) for n in self.config.shape
         )
 
-        # Built at reset() once a slice is chosen.
+        # Built at reset()/set_time_index() once a slice is chosen.
         self._interp_u: Optional[RegularGridInterpolator] = None
         self._interp_v: Optional[RegularGridInterpolator] = None  # 3D only
         self._current_slice: Optional[np.ndarray] = None
@@ -110,10 +111,26 @@ class ReanalysisFlowField(FlowField):
         if self._slice_mode == "fixed":
             t = self._fixed_index
         else:
-            t = int(jax.random.randint(rng_key, (), 0, self._T))
+            t = float(jax.random.randint(rng_key, (), 0, self._T))
+        self.set_time_index(t)
 
-        self.current_time_index = t
-        sl = self._winds[t]  # (n_x, n_y[, n_z], C)
+    def _slice_at_time(self, time_index: float) -> np.ndarray:
+        """Linearly blend adjacent cache slices at a possibly fractional time index."""
+        if not 0.0 <= time_index <= self._T - 1:
+            raise ValueError(
+                f"time_index must be in [0, {self._T - 1}], got {time_index}"
+            )
+        lo = int(np.floor(time_index))
+        hi = int(np.ceil(time_index))
+        alpha = float(time_index - lo)
+        if lo == hi:
+            return self._winds[lo]
+        return (1.0 - alpha) * self._winds[lo] + alpha * self._winds[hi]
+
+    def set_time_index(self, time_index: float) -> None:
+        """Set the active ERA5 time index, with linear interpolation if fractional."""
+        self.current_time_index = float(time_index)
+        sl = self._slice_at_time(float(time_index))  # (n_x, n_y[, n_z], C)
         self._current_slice = sl
         # bounds_error=False, fill_value=None -> linear extrapolation at the edges, so a
         # position sitting exactly on n_x (or a hair beyond from clipping) stays finite.
@@ -124,6 +141,18 @@ class ReanalysisFlowField(FlowField):
             self._interp_v = RegularGridInterpolator(
                 self._axes, sl[..., 1], method="linear", bounds_error=False, fill_value=None
             )
+
+    def velocity_at_time(
+        self, position: GridPosition, time_index: float
+    ) -> Tuple[float, Optional[float]]:
+        """Velocity at ``position`` after linearly interpolating ERA5 time slices."""
+        previous_time = self.current_time_index
+        self.set_time_index(time_index)
+        try:
+            return self.velocity_at(position)
+        finally:
+            if previous_time is not None:
+                self.set_time_index(previous_time)
 
     def velocity_at(self, position: GridPosition) -> Tuple[float, Optional[float]]:
         """Linearly interpolated (u, v) at a continuous position. v is None in 2D.

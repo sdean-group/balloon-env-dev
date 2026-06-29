@@ -127,6 +127,28 @@ def test_fixed_mode_can_select_explicit_slice(affine_npz_2d):
     )
 
 
+def test_fixed_mode_can_interpolate_fractional_time(affine_npz_2d):
+    case = affine_npz_2d
+    config = GridConfig.create(case["n_x"], case["n_y"])
+    field = ReanalysisFlowField(
+        config,
+        case["path"],
+        slice_mode="fixed",
+        fixed_index=0.25,
+    )
+
+    field.reset(KEY)
+
+    position = GridPosition(2.0, 3.0)
+    expected = 0.75 * case["truth"](2.0, 3.0, 0) + 0.25 * case["truth"](2.0, 3.0, 1)
+    assert field.current_time_index == pytest.approx(0.25)
+    assert field.velocity_at(position)[0] == pytest.approx(expected)
+    assert field.velocity_at_time(position, 1.5)[0] == pytest.approx(
+        0.5 * case["truth"](2.0, 3.0, 1) + 0.5 * case["truth"](2.0, 3.0, 2)
+    )
+    assert field.current_time_index == pytest.approx(0.25)
+
+
 # ----------------------------------------------------------- 6. realization diversity
 def test_random_mode_visits_multiple_slices(affine_npz_2d):
     f = _field_2d(affine_npz_2d, slice_mode="random")
