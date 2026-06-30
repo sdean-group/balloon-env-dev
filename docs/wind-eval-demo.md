@@ -1,163 +1,121 @@
-# Generating Wind Fields for Balloon RL — a Benchmark, and a First Trained Generator
+# Wind-Field Generation for Balloon RL — Benchmark + Trained Generator
 
-*A wind-field **evaluation harness** plus the first generator to clear it end-to-end: a trained
-**InfiniteDiffusion** model that produces unbounded, seamless, reproducible stratospheric winds.*
+A reference-free, two-axis **benchmark** for wind generators, and the first model to clear it: a
+trained **InfiniteDiffusion** generator producing unbounded, seamless, reproducible stratospheric
+winds. Scores ∈ [0,1], higher = better; **N/A** = capability not declared (not a penalty).
 
----
-
-## TL;DR
-
-- **The hard part isn't building a wind generator — it's knowing which one is *good*.** I built a
-  reference-free, two-axis **benchmark** that scores any wind generator without needing it to match
-  a single "true" field, and that fairly compares generators with very different capabilities.
-- I then built **InfiniteDiffusion**: a diffusion model that generates an *infinite, seamless*
-  wind field you can query anywhere, trained on real ERA5 reanalysis (on the Cooper Union GPU cluster).
-- **Result:** the trained model **beats every baseline except real ERA5** on field quality, while
-  being the only generator that satisfies the "infinite-generation" procedural guarantees.
+## Headline — two axes
 
 | | ERA5 (truth) | **InfiniteDiffusion (trained)** | phase-shuffle | BLE-VAE | toy | white noise |
 |---|---|---|---|---|---|---|
 | **Axis-1** — field quality | 0.93 | **0.66** | 0.57 | 0.50 | 0.48 | 0.00 |
-| **Axis-2** — procedure | N/A | **0.88** | N/A | N/A | 0.98 | N/A |
+| **Axis-2** — procedure | N/A | **0.88** | N/A | N/A | 0.99 | N/A |
+
+The trained model beats every baseline except real ERA5 on field quality, and is the only generator
+that satisfies the infinite-generation procedural guarantees (the toy is a no-ML stand-in used to
+validate the machinery).
 
 ---
 
-## 1. The problem
+## Axis-1 — field quality (reference-free, grid-independent)
 
-Training/evaluating a balloon RL agent needs *wind fields* — and lots of them. A balloon doesn't
-sit still; it drifts for days across hundreds of km and rides winds that change with altitude. So a
-useful wind generator has to:
+Each field is scored against *physically-motivated ideals*, no ground truth needed. **COMPOSITE =
+mean(score: spectrum, score: intermittency)** — both reference-free, in [0,1].
 
-- produce **many plausible** fields (for RL diversity), not one fixed map;
-- cover **unbounded extent** (the balloon wanders off any fixed crop);
-- be **seamless** (no artificial discontinuities the agent could exploit);
-- be **reproducible** (the same seed → the same world, for fair eval).
+| Component | ERA5 | trained | toy | phase-shuffle | BLE-VAE | noise |
+|---|---|---|---|---|---|---|
+| **score: spectrum** *(in composite)* | 1.00 | 1.00 | 0.84 | 1.00 | 0.00 | 0.00 |
+| **score: intermittency** *(in composite)* | 0.85 | 0.32 | 0.12 | 0.13 | 1.00 | 0.00 |
+| **= COMPOSITE** | **0.93** | **0.66** | **0.48** | **0.57** | **0.50** | **0.00** |
+| spectrum slope (≈ −3) · *diagnostic* | −3.92 | −3.53 | −2.52 | −3.92 | 1.67 | 0.05 |
+| increment kurtosis (>3) · *diagnostic* | 5.56 | 3.96 | 3.35 | 3.39 | 13.9 | 3.00 |
+| vort/div ratio (>1) · *diagnostic* | 0.77 | 0.93 | 3.76 | 0.97 | 59.5 | 0.96 |
+| amplitude vs peer · *diagnostic, ref-gated* | 1.00 | 0.48 | 0.70 | 1.00 | 0.52 | 1.00 |
 
-There are several ways to build such a generator — and that's exactly the problem.
+- **score: spectrum** — energy-spectrum slope vs the ≈ −3 synoptic-turbulence ideal (turned into a
+  [0,1] score). Trained: solved (slope −3.53).
+- **score: intermittency** — velocity-increment kurtosis vs ERA5's (the fat-tailed gusts/fronts real
+  wind has). Trained's main remaining gap (0.32 vs 0.85): right scale structure, too-smooth extremes.
+- **Diagnostics (reported, NOT in the composite):** *vort/div ratio* (rotational-vs-divergent
+  balance — real wind is rotation-dominated; this and kurtosis are what a **calibration** showed
+  actually discriminate, since phase-shuffled noise fakes the spectrum); *amplitude* (RMS wind speed
+  vs the peer — kept out of the composite because it needs a reference, and the structural scores stay
+  reference-free). ERA5 sits as a strong *peer row* on the same scale, not "the answer."
 
-## 2. Why I built the benchmark *first* (the real design challenge)
+## Axis-2 — the procedure (capability-gated)
 
-When picking a generator, the candidates differ so much that you **can't rank them on one number**:
+The claims only *some* generators make. **PROC COMPOSITE = mean of the four capability scores below**,
+computed only for generators that declare these capabilities; bounded generators (ERA5, VAE, anchors)
+are **N/A**, which is what lets fixed-crop and infinite generators share one leaderboard honestly.
 
-- Some are **bounded** (a fixed ERA5 crop, a VAE sample); some are **unbounded** (tile-based).
-- Some are **deterministic** interpolations; some are **stochastic** samplers.
-- "Accuracy to ERA5" is the wrong target — a *generative* model should make **plausible** weather,
-  not memorize one reanalysis snapshot. Penalizing it for not matching a specific field is backwards.
+| Component (all in composite) | trained | toy |
+|---|---|---|
+| **seam** (1 = seamless tiling) | 0.87 | 0.97 |
+| **revisit** (1 = exact seed-determinism; max\|Δ\| = 0) | 1.00 | 1.00 |
+| **budget / O(1)** (far-query ≈ near-query cost) | 0.94 | 0.98 |
+| **extent** (1 = no quality drift as the crop grows) | 0.69 | 0.99 |
+| **= PROC COMPOSITE** | **0.87** | **0.99** |
 
-So before committing to any generator, I built an **evaluation harness** with two orthogonal axes:
+- **seam** — divergence/value continuity across tile-stitch boundaries (no artificial edges).
+- **revisit** — same (seed, coords) re-derives bit-identical winds (Δ = 0): reproducible worlds.
+- **budget / O(1)** — querying a far location costs the same as a near one (lazy, constant-time).
+- **extent** — field quality stays flat as you sample larger regions (no large-scale repetition/drift).
 
-**Axis-1 — field quality (reference-free, grid-independent).** Each field is scored against
-*physically-motivated ideals*, no ground truth needed:
-- **energy spectrum slope** (≈ −3 for synoptic turbulence),
-- **rotational vs divergent balance** (real wind is rotation-dominated),
-- **velocity-increment kurtosis** (intermittency — the fat-tailed gusts/fronts real wind has).
-ERA5 is just a strong *peer row* on the same scale, not "the answer."
+The point this proves: swapping a *learned* denoiser into the unmodified machinery **keeps** all four
+guarantees — the model owns Axis-1, the machinery owns Axis-2, and they're independently testable.
 
-> A calibration finding shaped this: the obvious metrics (power spectrum, autocorrelation) are
-> **fooled by phase-shuffled noise** — it has the right spectrum but no real structure. Only the
-> vorticity/divergence balance and increment kurtosis (which probe *cross-structure* and
-> *non-Gaussianity*) actually discriminate. Those gate the score.
+## Axis-3 — temporal realism (in progress)
 
-**Axis-2 — the procedure (capability-gated).** The claims only *some* generators make: **seamless**
-tiling, **seed-determinism**, **O(1) random access**, and **no quality drift with extent**. Bounded
-generators simply don't declare these capabilities, so they score **N/A — not penalized**. This is
-what lets a fixed-crop VAE and an infinite tiler live on the same leaderboard honestly.
+The wind field must also **evolve like weather** over a multi-day episode. The metric is **`score:
+temporal realism` = mean(persistence-match, tendency-match)**, *peer-matched* to ERA5 — real evolution
+lives in a band, so **too-frozen *and* too-chaotic are both penalized** (tendency-match catches frozen;
+persistence-match catches incoherent) — plus **`drift`** (spatial COMPOSITE vs lead time; should stay
+flat). Validated ranking so far: ERA5 1.00 > kinematic-toy 0.53 (too frozen) > shuffled 0.34.
 
-## 3. The generator landscape the benchmark lets me compare
+> Key physical finding the benchmark surfaced: **wind patterns aren't passive tracers** — the jet is
+> quasi-stationary (air flows *through* it), so advecting ERA5 by its mean wind predicts the next
+> frame *worse* than persistence. So the advective baseline is a deliberately-naive *floor*, not a target.
 
-The benchmark turns "which generator should I build?" into an evidence-based decision. The field:
+**Methods being compared (both learned routes are built and training on the GPU cluster):**
+- **M1 kinematic/advective** — carry the static field by the mean wind. No learning; the naive floor.
+- **M3 autoregressive** (GenCast-style) — learn `p(frame_{t+1} | frame_t)` and roll forward. Standard
+  for weather; cheaper; cost = O(t) rollout + drift accumulation.
+- **M2 joint spacetime** — denoise an H×W×τ block jointly (factorized 2D-space + 1D-time); novel here,
+  preserves the O(1)/seamless guarantees *in time*; heavier.
+- *Parked:* M4 (noise/latent evolution) and M5 (advection + learned residual — a strong later option).
 
-| Generator | Type | Extent | Status |
-|---|---|---|---|
-| **ERA5 reanalysis** | real data | bounded | ceiling / truth peer |
-| **BLE-VAE** | learned (VAE) | bounded | baseline (team) |
-| Real-wind **linear interpolation** | interpolation | bounded | planned ([plan](plan_real_wind_linear_interp.md)) |
-| Data-driven **Gaussian process** | probabilistic | bounded | planned ([plan](plan_data_driven_gp.md)) |
-| **Temporal** evolving fields | — | — | planned ([plan](plan_temporal_fields.md)) |
-| **InfiniteDiffusion** | diffusion | **unbounded** | **implemented + trained (this week)** |
-| phase-shuffle / white-noise | anchors | bounded | lower-bound controls |
+A 5-row temporal leaderboard (ERA5 / M3 / M2 / kinematic-toy / shuffled) is wired up; the M3/M2 rows
+fill in once their training checkpoints land.
 
-InfiniteDiffusion is the candidate I bet on for the "unbounded + seamless + reproducible"
-requirements — the benchmark is what told me whether that bet paid off.
+---
 
-## 4. InfiniteDiffusion — what it is and how I built it
+## Design context (the choices behind the numbers)
 
-**The idea** (after Goslin's *Terrain Diffusion / InfiniteDiffusion*): run a diffusion model as a
-**blending wrapper** over an *infinite lattice*. A normal diffusion model denoises a fixed-size
-window; InfiniteDiffusion tiles overlapping windows across an unbounded grid and fuses them with a
-weighted average, evaluating *lazily* — only the windows your query touches. That's what makes the
-field infinite, seamless, and O(1) to sample anywhere.
+- **Benchmark first.** Candidate generators differ too much to rank on one number (bounded vs
+  unbounded, deterministic vs stochastic), and "accuracy to one ERA5 snapshot" is the wrong target for
+  a *generative* model — hence reference-free Axis-1 + capability-gated Axis-2.
+- **Two separable halves.** *Machinery* (lazy MultiDiffusion blending over an infinite lattice → Axis-2)
+  vs *model* (the window denoiser → Axis-1). The machinery was validated with an analytic toy denoiser
+  *before* training anything, then the real EDM model swapped in with zero machinery changes.
+- **The trained model.** EDM-style U-Net (pixel space) with vertical levels as channels (u,v × 18
+  model levels), per-(level,variable) normalization (stratospheric wind variance swings ~10× with
+  altitude); trained on ERA5 model-level crops (NE Pacific, levels 49–66) on the Cooper Union "Kahan"
+  cluster.
+- **Generator-family choice.** Of the three families — autoregressive outpainting (drifts), joint
+  diffusion (MultiDiffusion → **InfiniteDiffusion**, chosen for seamless/seed-consistent/O(1)), and
+  hierarchical coarse→fine (CorrDiff-style) — we built the InfiniteDiffusion fine layer first. The
+  **coarse→fine conditioning layer** (lat/lon/season + a synoptic field, à la CorrDiff/Terrain
+  Diffusion) is the planned next layer and is also where location/time conditioning enters.
+- **Truth ≠ observation.** The generated field is the *truth* the balloon flies through; a **separate**
+  forecast-error model (what the agent *sees*) layers on top — folding them together would destroy the
+  partial observability that makes the RL task interesting.
 
-**The design decision that made it tractable — two independent halves:**
-
-- **Machinery** (the blending wrapper) → owns the **Axis-2** properties (seamless, deterministic, O(1)).
-- **Model** (the window denoiser) → owns the **Axis-1** field quality.
-
-These are **separable and independently testable**. So I validated the machinery *first* with an
-**analytic toy denoiser** (a divergence-free field with a tuned spectrum — no ML), proving the
-infinite-generation guarantees before training anything. Then I trained the **real** denoiser and
-**swapped it in with zero changes to the machinery**.
-
-**The trained model:** an EDM-style U-Net (Karras et al.) in pixel space, with the vertical levels
-carried as channels (u,v × 18 model levels) and **per-(level,variable) normalization** (stratospheric
-wind variance swings ~10× with altitude). Trained on **ERA5 model-level crops** (4 seasonal weeks of
-2023 over the NE Pacific, levels 49–66 ≈ 50–140 hPa) on the **Cooper Union "Kahan" GPU cluster**
-(RTX PRO 6000), to 84k steps.
-
-## 5. Results
-
-**The trained field looks like real wind, and it's seamless.** Left: speed + direction. Right:
-vorticity with the tile-stitch grid overlaid — *a broken tiler shows streaks along those dashed
-lines; ours shows none.*
-
-![Trained InfiniteDiffusion wind field](figures/fig_trained_field.png)
-
-**Side-by-side structure.** The trained field shares ERA5's smooth, large-scale character; the
-analytic toy's divergence-free filaments look obviously synthetic by comparison. *(Each panel scaled
-to its own range — see the amplitude caveat below.)*
-
-![ERA5 vs trained vs toy](figures/fig_compare.png)
-
-**It's genuinely infinite.** Same seed, zooming in — multi-scale coherence and free random access
-into an unbounded field (the red box marks the next zoom):
-
-![Zoom montage](figures/fig_zoom_montage.png)
-
-**Reading the leaderboard:**
-
-- **Axis-1 (0.66):** beats the toy, BLE-VAE, and even phase-shuffle; trails only the ERA5 ceiling
-  (0.93). The **energy spectrum is solved** (score 1.00, slope −3.53). The remaining gap is almost
-  entirely **intermittency** (0.32 vs ERA5's 0.85) — the model gets the scale structure right but
-  under-produces sharp gusts/fronts.
-- **Axis-2 (0.88):** swapping a *learned* denoiser into the machinery **keeps** the guarantees —
-  **exact seed-determinism** (repeat query Δ = 0), seamless tiling (0.87), O(1) random access. This
-  validates the two-halves design end-to-end: a real model inherits the infinite/seamless/deterministic
-  properties for free.
-
-## 6. Known limitations → and where this goes next
-
-The benchmark didn't just rank the model — it pointed at exactly what to fix:
-
-- **Amplitude is low — now measured and decomposed.** I added a (scale-relative) **amplitude
-  metric** to Axis-1 — RMS wind speed vs the peer, kept out of the reference-free COMPOSITE.
-  Investigating the apparent "≈10 vs ≈30 m/s" gap showed it's **two effects**: (1) the eval peer
-  (`era5_real`, 33–42°N) is a genuinely jet-stronger region than the model's *training* climatology
-  (`era5_train`, 25–55°N + seasonal averaging) — a perfect model would still only score **0.70** vs
-  the peer (an unavoidable climatology offset); and (2) a real **generation defect** — the
-  deterministic ODE sampler recovers only ~42% of the anomaly variance (under-dispersion), so the
-  model hits ~0.69 of its *own* target amplitude. I tested the obvious no-retrain fix (a
-  window-seeded **stochastic sampler**): in isolation it helps, but on the *blended* generator the
-  MultiDiffusion average smooths the per-window stochasticity away and amplitude/intermittency get
-  *worse* — so the real fix is **more training + more diverse data** (the run was cut off at 84k on
-  4 weeks), not a sampler change. The stochastic sampler is kept off by default (it does improve
-  **extent drift** 0.69→0.90, a separate gap).
-- **Intermittency gap (0.32 → 0.85).** The biggest field-quality gap; the candidate fix is a loss
-  re-weighting / noise-schedule change (or simply more, more-diverse data — this used only 4 weeks).
-- **Mild extent drift (+0.063/octave).** Quality varies slightly with crop size; fixable by adding
-  blending iterations with a restart-style refinement.
-
-Each of these is a **metric-driven** next step — which is the whole point of building the benchmark
-first. After that: coarse weather conditioning, then **time/advection** (the real research target).
+## Known gaps → next steps (each is metric-driven)
+- **Intermittency 0.32 → 0.85** (the main field-quality gap) and **low amplitude** — both point to
+  *more training + more diverse data* (the run was cut at 84k steps on 4 seasonal weeks), not a sampler
+  change (a stochastic sampler was tested and made the blended field worse).
+- **Mild extent drift (+0.063/octave)** — fixable with restart-style blending iterations.
+- Then: **coarse conditioning**, and **time/advection** (the real research target — M2/M3 above).
 
 ---
 
@@ -166,14 +124,11 @@ first. After that: coarse weather conditioning, then **time/advection** (the rea
 ```bash
 # from balloon-env-dev/, full pixi env (jax + torch + infinite-tensor):
 PY=".pixi/envs/default/bin/python"
-
-# two-axis leaderboard (trained model):
-PYTHONPATH=. $PY -m src.eval.windeval.benchmark_m1 --ckpt runs/idiff_m1/step_84000.pt
-
-# these figures:
-PYTHONPATH=. $PY -m src.eval.windeval.scripts.make_demo_figures --ckpt runs/idiff_m1/step_84000.pt
+PYTHONPATH=. $PY -m src.eval.windeval.benchmark_m1 --ckpt runs/idiff_m1/step_84000.pt   # spatial, both axes
+PYTHONPATH=. $PY -m src.eval.windeval.benchmark_temporal --m3-ckpt … --m2-ckpt …        # temporal leaderboard
 ```
 
-Full reports: [`benchmark_m1_report.md`](../src/eval/windeval/benchmark_m1_report.md) (trained,
-both axes) and [`benchmark_m0_report.md`](../src/eval/windeval/benchmark_m0_report.md) (machinery
-validation with the toy). Staged build log + design decisions: `infinite-diffusion-progress.md`.
+Figures: `docs/figures/` (trained field + seam overlay, ERA5/trained/toy comparison, zoom montage).
+Full reports: [`benchmark_m1_report.md`](../src/eval/windeval/benchmark_m1_report.md),
+[`benchmark_temporal_report.md`](../src/eval/windeval/benchmark_temporal_report.md). Build log +
+design decisions: `infinite-diffusion-progress.md`.
