@@ -1,9 +1,9 @@
-"""Cross-country A-to-B navigation with a simple first-order MPC baseline.
+"""Navigation tasks with a simple first-order MPC baseline.
 
 The controller is intentionally plain: at every step, it tries a small set of
 fixed-altitude rollouts and chooses the altitude whose simulated endpoint is
-closest to the target. This is the baseline we should expect learned policies to
-beat later.
+best for the task. This is the baseline we should expect learned policies to beat
+later.
 """
 
 from __future__ import annotations
@@ -37,7 +37,13 @@ def _distance(x: float, y: float, target: tuple[float, float]) -> float:
     return float(np.hypot(x - target[0], y - target[1]))
 
 
-def _rollout_altitude(field, config, x, y, z, target, horizon, time_index):
+def _objective(x, y, args) -> float:
+    if args.task == "cross-country":
+        return -_distance(x, y, (float(args.target[0]), float(args.target[1])))
+    return _distance(x, y, (float(args.start[0]), float(args.start[1])))
+
+
+def _rollout_altitude(field, config, x, y, z, horizon, time_index, args):
     for h in range(horizon):
         position = GridPosition(x, y, z)
         if hasattr(field, "velocity_at_time"):
@@ -45,15 +51,15 @@ def _rollout_altitude(field, config, x, y, z, target, horizon, time_index):
         else:
             u, v = field.velocity_at(position)
         x, y = _clip(x + float(u), y + float(v), config)
-    return _distance(x, y, target)
+    return _objective(x, y, args)
 
 
-def _choose_altitude(field, config, x, y, target, candidates, horizon, time_index):
+def _choose_altitude(field, config, x, y, candidates, horizon, time_index, args):
     scores = [
-        (_rollout_altitude(field, config, x, y, z, target, horizon, time_index), z)
+        (_rollout_altitude(field, config, x, y, z, horizon, time_index, args), z)
         for z in candidates
     ]
-    return min(scores, key=lambda item: item[0])[1]
+    return max(scores, key=lambda item: item[0])[1]
 
 
 def _simulate(args):
@@ -76,8 +82,11 @@ def _simulate(args):
     path = []
     for step in range(args.steps + 1):
         dist = _distance(x, y, target)
-        path.append(dict(step=step, x=x, y=y, z=z, distance=dist))
-        if dist <= args.target_radius or step == args.steps:
+        start_dist = _distance(x, y, (float(args.start[0]), float(args.start[1])))
+        path.append(dict(step=step, x=x, y=y, z=z, distance=dist, start_distance=start_dist))
+        if args.task == "cross-country" and dist <= args.target_radius:
+            break
+        if step == args.steps:
             break
         time_index = min(float(args.time_index) + step * args.time_delta, field._T - 1)
         z = _choose_altitude(
@@ -85,10 +94,10 @@ def _simulate(args):
             config,
             x,
             y,
-            target,
             candidates,
             args.horizon,
             time_index,
+            args,
         )
         u, v = field.velocity_at_time(GridPosition(x, y, z), time_index)
         x, y = _clip(x + float(u), y + float(v), config)
@@ -100,8 +109,13 @@ def _write_html(config: GridConfig, path, args, output_path: Path) -> None:
         shape=list(config.shape),
         start=list(args.start),
         target=list(args.target),
+        task=args.task,
         path=path,
-        title="Cross-country navigation: first-order MPC",
+        title=(
+            "Cross-country navigation: first-order MPC"
+            if args.task == "cross-country"
+            else "Max-distance navigation: first-order MPC"
+        ),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -135,13 +149,13 @@ def _write_html(config: GridConfig, path, args, output_path: Path) -> None:
         marker: {{size: 14, color: "#f59e0b"}},
         name: "start"
       }},
-      {{
+      ...(data.task === "cross-country" ? [{{
         x: [data.target[0]],
         y: [data.target[1]],
         mode: "markers",
         marker: {{size: 16, color: "#dc2626", symbol: "x"}},
         name: "target"
-      }}
+      }}] : [])
     ], {{
       title: data.title,
       paper_bgcolor: "#f8fafc",
@@ -160,6 +174,7 @@ def _write_html(config: GridConfig, path, args, output_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", choices=["cross-country", "max-distance"], default="cross-country")
     parser.add_argument("--data", required=True)
     parser.add_argument("--start", type=float, nargs=3, default=[8.0, 20.0, 4.0])
     parser.add_argument("--target", type=float, nargs=2, default=[36.0, 32.0])
@@ -178,13 +193,13 @@ def main() -> None:
     output_path = Path(args.output)
     _write_html(config, path, args, output_path)
     final = path[-1]
+    metric = final["distance"] if args.task == "cross-country" else final["start_distance"]
     print(f"wrote {output_path}")
     print(
         f"final=({final['x']:.2f}, {final['y']:.2f}, z={final['z']:.2f}) "
-        f"distance={final['distance']:.2f} steps={final['step']}"
+        f"metric={metric:.2f} steps={final['step']}"
     )
 
 
 if __name__ == "__main__":
     main()
-

@@ -38,6 +38,7 @@ from src.env.field.era5_data import load_era5
 
 FIELD_CHOICES = (
     "synthetic",
+    "legacy-synthetic",
     "helmholtz-synthetic",
     "era5",
     "data-driven-gp",
@@ -52,7 +53,7 @@ def _config_from_args(args) -> GridConfig:
         winds = load_era5(args.data).winds
         spatial_shape = winds.shape[1:-1]
         return GridConfig.create(*spatial_shape)
-    if args.field not in ("synthetic", "helmholtz-synthetic"):
+    if args.field not in ("synthetic", "legacy-synthetic", "helmholtz-synthetic"):
         raise ValueError("--data is required for ERA5 and data-driven GP fields")
     if len(args.grid) == 2:
         return GridConfig.create(args.grid[0], args.grid[1], args.default_levels)
@@ -88,6 +89,13 @@ def _position(values: Sequence[float] | None, config: GridConfig) -> GridPositio
 
 def _build_field(name: str, config: GridConfig, args):
     if name == "synthetic":
+        return HelmholtzSyntheticFlowField(
+            config,
+            sigma=args.synthetic_sigma,
+            lengthscale=args.synthetic_lengthscale,
+            num_features=args.num_features,
+        )
+    if name == "legacy-synthetic":
         return SyntheticFlowField(
             config,
             sigma=args.synthetic_sigma,
@@ -236,7 +244,8 @@ def _simulate(field, config: GridConfig, start: GridPosition, args):
 
 def _title_name(name: str) -> str:
     return {
-        "synthetic": "Synthetic GP",
+        "synthetic": "Helmholtz Synthetic GP",
+        "legacy-synthetic": "Legacy Synthetic GP",
         "helmholtz-synthetic": "Helmholtz Synthetic GP",
         "era5": "ERA5 Linear Interpolation",
         "data-driven-gp": "Data-Driven GP",
