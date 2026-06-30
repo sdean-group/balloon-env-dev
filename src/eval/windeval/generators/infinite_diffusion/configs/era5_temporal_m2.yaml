@@ -1,0 +1,40 @@
+# M2 JOINT-SPACETIME temporal config — denoise H×W×τ blocks on Kahan.
+# Factorized denoiser (2D spatial convs run per-frame + a zero-init 1D TemporalConv along τ);
+# samples a whole τ-frame block at once (spacetime.SpaceTimeSampler). Long sequences come from
+# temporal tiling later (deferred until this block model trains).
+#
+# VRAM note: spatial convs fold (batch · τ) into the conv batch, so effective spatial batch =
+# batch_size * n_frames. With n_frames=4 keep batch_size ~ 1/4 of the static run (32 -> 128
+# spatial frames, comparable memory to the static batch-128). Grow n_frames (longer blocks =
+# more temporal context) and shrink batch_size to fit 96 GB; tune both as one knob.
+data:
+  data_path: src/eval/windeval/data/era5_temporal.zarr   # contiguous hourly, 4 seasonal blocks
+  crop: 64
+  levels: [49, 66]
+  augment: true
+
+# --- temporal (M2) ---
+spacetime: true
+n_frames: 4                       # τ: frames per block (block temporal extent)
+frame_stride: 1                   # native hourly spacing between the τ frames
+temporal_kernel: 3                # 1D conv width along time
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]        # spatial attention (per-frame); temporal mixing is the 1D conv
+  sigma_data: 1.0
+
+train:
+  batch_size: 32                  # * n_frames(4) = 128 spatial frames -> ~ static batch-128 VRAM
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 100000
+  warmup_steps: 1000
+  num_workers: 4
+  out_dir: runs/idiff_m2
+  ckpt_every: 2000
+  log_every: 100
+  device: auto
+  seed: 0

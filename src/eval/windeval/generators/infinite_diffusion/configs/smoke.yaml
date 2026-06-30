@@ -1,0 +1,28 @@
+# Smoke config — validate the Phase-2 pipeline end-to-end on the existing 24-step SF slice.
+# NOT a real training run: tiny model, few steps, small crop, CPU/MPS. The goal is only to
+# confirm the loop trains, a sample comes out finite, and the Axis-1 gate runs.
+data:
+  data_path: src/eval/windeval/data/era5_real.zarr
+  crop: 32                 # grid is 37x41, so 32 fits
+  levels: [49, 66]
+  augment: true
+
+model:
+  model_channels: 32
+  channel_mult: [1, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [4]
+  sigma_data: 1.0
+
+train:
+  batch_size: 16
+  lr: 2.0e-4
+  ema_decay: 0.995
+  n_steps: 400
+  warmup_steps: 50
+  num_workers: 0           # 0 for MPS / smoke
+  out_dir: runs/idiff_smoke
+  ckpt_every: 200
+  log_every: 50
+  device: auto
+  seed: 0

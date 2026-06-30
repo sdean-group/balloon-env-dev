@@ -9,7 +9,9 @@ Metrics depend only on this format, never on how a field was produced.
 from __future__ import annotations
 
 import json
+import warnings
 import datetime as _dt
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -17,8 +19,21 @@ import xarray as xr
 
 FORMAT_VERSION = "v1"
 
+
+@contextmanager
+def _quiet_zarr_hierarchy():
+    """Silence zarr's benign 'not recognized as a component of a Zarr hierarchy' warning.
+
+    We deliberately store root-level field arrays alongside a `querylog` subgroup in one v2
+    store; zarr-v3's group scan warns about the mixed hierarchy, but the reads are correct.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*not recognized as a component.*")
+        yield
+
 # attrs whose values are dicts get JSON-encoded so zarr can store them.
-_JSON_ATTRS = ("generator", "conditioning", "capabilities", "hardware", "level_coeffs")
+_JSON_ATTRS = ("generator", "conditioning", "capabilities", "hardware", "level_coeffs",
+               "seam_boundaries")
 
 
 def _encode_attrs(attrs: dict) -> dict:
@@ -116,9 +131,48 @@ def write(ds: xr.Dataset, attrs: dict, path: str | Path) -> Path:
 
 
 def read(path: str | Path) -> xr.Dataset:
-    ds = xr.open_zarr(path, consolidated=False, zarr_format=2)
+    with _quiet_zarr_hierarchy():
+        ds = xr.open_zarr(path, consolidated=False, zarr_format=2)
     ds.attrs = _decode_attrs(ds.attrs)
     return ds
+
+
+# ---------- querylog/ sub-artifact (Axis-2: revisit + budget) ----------
+# Stored as a `querylog` group inside the same zarr store as field/ (one ID, two
+# sub-artifacts per the spec). Scattered point queries with their cost + revisits.
+
+_QUERYLOG_VARS = ("x", "y", "level", "t", "seed", "u", "v", "latency_s", "peak_mem")
+
+
+def make_querylog(
+    *,
+    x, y, level, t, seed, u, v, latency_s, peak_mem,
+    trajectory_source: str = "random",
+    revisit_tolerance: float = 1e-5,
+) -> xr.Dataset:
+    """Build a `querylog/` Dataset (dim n_queries). Revisits = repeated (x,y,level,seed) rows."""
+    data = dict(x=x, y=y, level=level, t=t, seed=seed, u=u, v=v,
+                latency_s=latency_s, peak_mem=peak_mem)
+    ds = xr.Dataset({k: (("n_queries",), np.asarray(v)) for k, v in data.items()})
+    ds.attrs = {"trajectory_source": trajectory_source,
+                "revisit_tolerance": float(revisit_tolerance)}
+    return ds
+
+
+def write_querylog(qds: xr.Dataset, path: str | Path) -> Path:
+    """Append the querylog as a `querylog` group to an existing artifact store."""
+    path = Path(path)
+    qds.to_zarr(path, mode="a", group="querylog", consolidated=False, zarr_format=2)
+    return path
+
+
+def read_querylog(path: str | Path) -> xr.Dataset:
+    with _quiet_zarr_hierarchy():
+        return xr.open_zarr(Path(path), group="querylog", consolidated=False, zarr_format=2)
+
+
+def has_querylog(path: str | Path) -> bool:
+    return (Path(path) / "querylog").exists()
 
 
 def grid_spacing_m(ds: xr.Dataset) -> tuple[float, float]:

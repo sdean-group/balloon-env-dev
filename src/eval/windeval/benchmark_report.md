@@ -8,29 +8,29 @@ Objective scores vs physical ideals (no distance-to-ERA5). ERA5 is a **peer row*
 
 | Metric (ideal) | era5_real (peer) | phase_shuffle | white_noise |
 |---|---|---|---|
-| spectrum slope (≈ −3 (steep)) | -3.95 | -3.95 | 0.0548 |
-| Helmholtz rot. frac (→ 1 (rotational)) | 0.538 | 0.577 | 0.497 |
-| vort/div ratio (> 1) | 0.964 | 1.18 | 0.99 |
-| increment kurtosis (> 3 (intermittent)) | 5.72 | 3.38 | 3.03 |
+| spectrum slope (≈ −3 (steep)) | -3.92 | -3.92 | 0.0507 |
+| Helmholtz rot. frac (→ 1 (rotational)) | 0.45 | 0.491 | 0.488 |
+| vort/div ratio (> 1) | 0.766 | 0.972 | 0.964 |
+| increment kurtosis (> 3 (intermittent)) | 5.56 | 3.39 | 3 |
 
 **Objective scores ∈ [0,1]**
 
 | Score | era5_real (peer) | phase_shuffle | white_noise |
 |---|---|---|---|
 | score: spectrum | 1.000 | 1.000 | 0.000 |
-| score: Helmholtz | 0.077 | 0.155 | 0.000 |
-| score: intermittency | 0.906 | 0.127 | 0.009 |
-| COMPOSITE | **0.953** | **0.564** | **0.004** |
+| score: Helmholtz | 0.000 | 0.000 | 0.000 |
+| score: intermittency | 0.852 | 0.130 | 0.000 |
+| COMPOSITE | **0.926** | **0.565** | **0.000** |
 
 **Relative diagnostic** (speed dist. vs ERA5 peer-distribution — weak separator, kept as a sanity check)
 
 | Metric | era5_real (peer) | phase_shuffle | white_noise |
 |---|---|---|---|
-| speed Wasserstein (m/s) | 0 | 0.325 | 0.363 |
+| speed Wasserstein (m/s) | 0 | 0.299 | 0.292 |
 
 ## Verdict (automated checks)
-- ✅ ranking: real (0.953) > phase-shuffle (0.564) > noise (0.004)
+- ✅ ranking: real (0.926) > phase-shuffle (0.565) > noise (0.000)
 - ✅ spectrum FOOLED by phase-shuffle (real 1.00 ≈ shuffle 1.00) — necessary but insufficient
-- ✅ intermittency is THE discriminator: real kurtosis 5.72 >> shuffle 3.38 ≈ noise 3.03 (~3)
-- ✅ FINDING: Helmholtz WEAK here (real 0.54 vs shuffle 0.58, Δ=0.04) — rotational character is spectrum-encoded + bounded-box FFT bias; diagnostic only
-- ✅ white noise fails the composite (score 0.004) — lower bound confirmed
+- ✅ intermittency is THE discriminator: real kurtosis 5.56 >> shuffle 3.39 ≈ noise 3.00 (~3)
+- ✅ FINDING: Helmholtz NOT usable here (real 0.45 ≈ shuffle 0.49, Δ=0.04). Decomposition math is validated on analytic vortex/source (tests/test_helmholtz) but real structure fills this small/coarse box — needs a larger domain or a bounded-domain Poisson solver. Excluded from composite.
+- ✅ white noise fails the composite (score 0.000) — lower bound confirmed

@@ -14,6 +14,17 @@ Minimal elegant set — four orthogonal properties of "wind-likeness":
 
 #2 and #3 catch phase-shuffle by two *different* mechanisms (cross-structure vs
 Gaussianization), so the benchmark never leans on a single discriminator.
+
+Amplitude (scale, NOT shape)
+----------------------------
+The four metrics above are deliberately **scale-invariant** — they probe spatial/statistical
+*structure*, so a generator can reproduce the structure while being systematically too calm
+(or too energetic) and they won't notice. Diffusion samplers in particular tend to
+*under-disperse* (a deterministic ODE recovers less than the full marginal variance), which
+shows up as low wind amplitude with the right shape. ``amplitude rms`` (= RMS wind speed)
+captures this. It is inherently *scale-relative* — there is no reference-free "ideal" wind
+speed — so unlike the others it is scored only against a supplied peer RMS (``ref_rms``) and
+is kept OUT of the reference-free COMPOSITE.
 """
 from __future__ import annotations
 
@@ -131,9 +142,35 @@ def _wasserstein1d(a, b, n=512):
     return float(np.mean(np.abs(np.quantile(a, qs) - np.quantile(b, qs))))
 
 
+def amplitude_rms(ds) -> float:
+    """RMS wind speed sqrt(mean(u**2 + v**2)) over the whole field, in m/s.
+
+    A reference-free *fact* about a field's energy level. Scoring it requires a peer
+    (see ``field_scores(..., ref_rms=...)``); on its own it is just the number to compare.
+    """
+    u, v = ds["u"].values, ds["v"].values
+    return float(np.sqrt(np.mean(u ** 2 + v ** 2)))
+
+
+def _amplitude_score(rms: float, ref_rms: float) -> float:
+    """Symmetric ratio score in (0,1]: 1 at parity, penalising too-calm AND too-energetic.
+
+    ``min(r, 1/r)`` with ``r = rms/ref_rms`` — a field at half the reference energy and one
+    at double both score 0.5. Linear-in-ratio is interpretable (0.71 == "29% too calm").
+    """
+    if not (np.isfinite(rms) and np.isfinite(ref_rms)) or rms <= 0 or ref_rms <= 0:
+        return float("nan")
+    r = rms / ref_rms
+    return float(min(r, 1.0 / r))
+
+
 # ---------- objective scoring ----------
 
-def field_scores(ds) -> dict:
+def field_scores(ds, *, ref_rms: float | None = None) -> dict:
+    """Axis-1 scores. ``ref_rms`` (m/s): a peer RMS wind speed enabling the *scale* metric
+    (``amplitude rms`` + ``score: amplitude``). The shape metrics + COMPOSITE are unaffected
+    by it — COMPOSITE stays reference-free; amplitude is reported alongside as a diagnostic.
+    """
     dx, dy = grid_spacing_m(ds)
     u, v = ds["u"].values, ds["v"].values  # (time, level, y, x)
     nt, nl = u.shape[0], u.shape[1]
@@ -169,4 +206,10 @@ def field_scores(ds) -> dict:
         # Kept as caveated diagnostics; promote once a non-periodic solver lands.
         "COMPOSITE": float(np.mean([s_spec, s_int])),
     }
+    # amplitude (scale) — reported always; scored only against a supplied peer. Deliberately
+    # NOT in COMPOSITE: it needs a reference, and the structure metrics stay reference-free.
+    rms = float(np.sqrt(np.mean(u ** 2 + v ** 2)))
+    raw["amplitude rms"] = rms
+    if ref_rms is not None:
+        scores["score: amplitude"] = _amplitude_score(rms, ref_rms)
     return {**raw, **scores, "speed": np.sqrt(u ** 2 + v ** 2).ravel()}
