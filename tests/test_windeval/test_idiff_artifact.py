@@ -15,7 +15,7 @@ import numpy as np
 try:
     import torch  # noqa: F401
     from src.eval.windeval import artifact
-    from src.eval.windeval.metrics.realism import field_scores
+    from src.eval.windeval.metrics import run_suite
     from src.eval.windeval.generators.infinite_diffusion import (
         InfiniteDiffusionGenerator, viz,
     )
@@ -53,9 +53,10 @@ def run():
             len(seams["x"]) > 0 and all(0 < i < 160 for i in seams["x"]))
         chk("hardware recorded", "device" in ds.attrs["hardware"])
 
-        sc = field_scores(ds)
-        chk("Axis-1 metric runs on artifact", np.isfinite(sc["COMPOSITE"]),
-            f"slope={sc['spectrum slope']:.2f}, COMPOSITE={sc['COMPOSITE']:.2f}")
+        sc, _ = run_suite(ds, ds)   # self-comparison: residuals must be ~0
+        chk("metric suite runs on artifact (self-SR ≈ 0)",
+            np.isfinite(sc["SR_E"]) and sc["SR_E"] < 1e-6 and sc["W1 u (m/s)"] < 1e-6,
+            f"SR_E={sc['SR_E']:.2e}, W1_u={sc['W1 u (m/s)']:.2e}")
 
         chk("querylog present", artifact.has_querylog(path))
         q = artifact.read_querylog(path)

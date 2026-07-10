@@ -27,7 +27,7 @@ model:
   sigma_data: 1.0
 
 train:
-  batch_size: 32                  # * n_frames(4) = 128 spatial frames -> ~ static batch-128 VRAM
+  batch_size: 16                  # *n_frames(4)=64 spatial frames; fits a 48GB MIG instance (raise to 32 on a 96GB)
   lr: 2.0e-4
   ema_decay: 0.9999
   n_steps: 100000

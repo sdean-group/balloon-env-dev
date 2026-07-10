@@ -1,21 +1,27 @@
 #!/bin/bash
 #SBATCH --job-name=idiff-temporal
 #SBATCH --output=/zooper2/shaurya.sen/work/balloon-env-dev/runs/%x-%j.out
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:gpu48:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
 #
 # Train a TEMPORAL InfiniteDiffusion denoiser (Phase 4d) on Kahan — M3 (autoregressive) or
 # M2 (joint spacetime). Parameterized: pass CONFIG via env (defaults to M3). The job name (-J)
-# names the .out file via %x, so launch with a descriptive name:
+# names the .out file via %x, so launch with a descriptive name.
 #
-#   # M3 autoregressive:
+# Kahan GPUs are MIG-partitioned into memory POOLS (see wiki kahan-info#gpu_resource_types):
+# gpu:gpu24 (24GB, x8), gpu:gpu48 (48GB, x2), gpu:gpu96 (96GB, x2). You MUST request a pool via
+# --gres=gpu:<pool>:<count> (a bare `--gres=gpu:1` will NOT map to a MIG instance and the job dies
+# at CUDA init). SLURM sets CUDA_VISIBLE_DEVICES to the allocated instance automatically — do NOT
+# set it yourself. Default here is gpu48:1 (fits M3's ~28GB at batch 128); override per job:
+#
+#   # M3 autoregressive (~28GB -> 48GB pool):
 #   CONFIG=src/eval/windeval/generators/infinite_diffusion/configs/era5_temporal_m3.yaml \
-#     sbatch -J idiff-m3 .../configs/train_temporal.sbatch
-#   # M2 joint spacetime:
+#     sbatch --gres=gpu:gpu48:1 --requeue -J idiff-m3 .../configs/train_temporal.sbatch
+#   # M2 joint spacetime (heavier -> 96GB pool):
 #   CONFIG=src/eval/windeval/generators/infinite_diffusion/configs/era5_temporal_m2.yaml \
-#     sbatch -J idiff-m2 .../configs/train_temporal.sbatch
+#     sbatch --gres=gpu:gpu96:1 --requeue -J idiff-m2 .../configs/train_temporal.sbatch
 #
 # Resumable: re-submitting picks up from <out_dir>/latest.pt (cfg.resume=true). out_dir is set
 # inside the YAML (runs/idiff_m3 or runs/idiff_m2).

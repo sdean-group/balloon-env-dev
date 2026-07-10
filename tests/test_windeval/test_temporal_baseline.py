@@ -1,13 +1,13 @@
-"""T0 temporal baseline: AdvectedField (kinematic O(1) time axis) + temporal metrics.
+"""T0 temporal baseline: AdvectedField (kinematic O(1) time axis) scaffolding.
 
 Validates the route-agnostic temporal scaffolding that both learned routes (autoregressive,
 spacetime) build on:
   - AdvectedField is O(1)-in-time (a coordinate shift), deterministic, and t=0 == the static
     field exactly (advection preserves the seamless/deterministic guarantees).
   - the temporal artifact carries a datetime64 time axis + temporally_evolving=True.
-  - the peer-matched temporal-realism score ranks ERA5 > advective-toy > shuffled (the naive
-    advective baseline is caught as TOO FROZEN by tendency-match), and structure_advection
-    is reported as a diagnostic.
+
+(Temporal *metric* calibration — SR_time / trajectory dispersion ranking real > shuffled —
+lives in tests/test_windeval/test_metrics_v2.py since the benchmark-v2 overhaul.)
 
 Run:  PYTHONPATH=. .pixi/envs/default/bin/python tests/test_windeval/test_temporal_baseline.py
 """
@@ -19,8 +19,6 @@ import numpy as np
 try:
     import torch  # noqa: F401
     from src.eval.windeval import artifact
-    from src.eval.windeval.metrics.temporal import (
-        temporal_scores, temporal_persistence, tendency_mag)
     from src.eval.windeval.generators.infinite_diffusion.advected import (
         AdvectedField, velocity_from_stats)
     from src.eval.windeval.generators.infinite_diffusion.trained import (
@@ -32,15 +30,14 @@ except ImportError as e:  # pragma: no cover
     _ERR = e
 
 CKPT = "runs/idiff_m1/step_84000.pt"
-ERA5 = "src/eval/windeval/data/era5_real.zarr"
 
 
 def run():
     if not HAVE:
         print(f"SKIP test_temporal_baseline (deps not installed: {_ERR})")
         return True
-    if not (Path(CKPT).exists() and Path(ERA5).exists()):
-        print(f"SKIP test_temporal_baseline (ckpt or era5 missing)")
+    if not Path(CKPT).exists():
+        print("SKIP test_temporal_baseline (ckpt missing)")
         return True
 
     checks = []
@@ -76,23 +73,6 @@ def run():
     chk("time axis is datetime64", np.issubdtype(ds["time"].dtype, np.datetime64))
     chk("temporally_evolving capability set",
         ds.attrs.get("capabilities", {}).get("temporally_evolving") is True)
-
-    # peer-matched realism ranking: ERA5 > advective-toy > shuffled
-    er = artifact.read(ERA5)
-    rp, rt = temporal_persistence(er), tendency_mag(er)
-    eu, ev = er["u"].values, er["v"].values
-    rng = np.random.default_rng(0)
-    sh = artifact.make_field(eu[rng.permutation(eu.shape[0])], ev[rng.permutation(ev.shape[0])],
-                             level=er["level"].values, lat=er["lat"].values,
-                             lon=er["lon"].values, time=er["time"].values)
-    kw = dict(ref_persistence=rp, ref_tendency=rt)
-    r_era = temporal_scores(er, **kw)["score: temporal realism"]
-    r_toy = temporal_scores(ds, **kw)["score: temporal realism"]
-    r_sh = temporal_scores(sh, **kw)["score: temporal realism"]
-    chk("temporal realism ranks ERA5 > advective-toy > shuffled",
-        r_era > r_toy > r_sh, f"era {r_era:.2f} > toy {r_toy:.2f} > shuffled {r_sh:.2f}")
-    chk("advective toy flagged TOO FROZEN by tendency (low tendency-match)",
-        temporal_scores(ds, **kw)["score: tendency match"] < 0.5)
 
     ok = all(checks)
     print("\n" + ("ALL PASS" if ok else "SOME FAILED"))

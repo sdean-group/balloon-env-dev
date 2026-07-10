@@ -1,16 +1,26 @@
-"""Temporal / dynamics metrics — is the field evolving like real weather?
+"""Temporal metrics — Physical Consistency §Temporal of the benchmark spec.
 
-The reference-free discriminator is TEMPORAL PERSISTENCE: real wind evolves slowly
-(consecutive hours strongly correlated, small tendency); the per-timestep anchors
-have independent frames, so persistence collapses and tendency explodes.
+  1. Temporal power spectrum: fix grid points, take the 1D FFT of their u/v time series,
+     and compare the (log-averaged) power spectrum against ERA5's with the same
+     spectral-residual formula used in space → SR_time (0 = same persistence structure).
+  2. Trajectory dispersion: advect passive tracers in 2D through the evolving winds, per
+     level, and compare mean-square displacement vs lead time and the position spread at
+     the final common lead time against ERA5 → "disp log-MSD RMSE" and
+     "final spread ratio" (1 = parity).
 
-DRIFT (quality vs lead time) is the metric that matters for *generators* over long
-rollouts; on real data it should be ~flat. We compute the machinery here and report
-the slope — on real ERA5 it validates "no drift"; it bites when a generator rolls out.
+Both need a real (datetime64) time axis with at least MIN_FRAMES contiguous frames;
+static artifacts get NaN (= N/A).
 
-(Future dynamics test for generators: structure-advection matching — do features move
-at the flow speed — which separates 'truly dynamical' from 'temporally smooth but
-undynamical'. Not needed to separate the incoherent anchors.)
+SEGMENTS: a reference like the held-out ERA5 set is several disjoint seasonal blocks —
+FFTing or advecting across a block boundary would be nonsense. Every metric here first
+splits the time axis into contiguous segments (dt jumps end a segment), computes per
+segment, and averages: log-PSDs are averaged on a common frequency grid, MSD curves are
+averaged over the common lead-time range. A single contiguous episode is just the
+one-segment case.
+
+Frequencies are in cycles/hour; dispersion works in meters on the tangent plane with
+edge-clamped bilinear velocity sampling and Heun (RK2) steps — the identical protocol on
+both sides is what makes the comparison fair.
 """
 from __future__ import annotations
 
@@ -18,123 +28,152 @@ import numpy as np
 
 from ..artifact import grid_spacing_m
 
+MIN_FRAMES = 16
+PSD_MAX_POINTS = 8          # sample an ≤8×8 lattice of grid points for the temporal PSD
+DISP_N_SIDE = 8             # 8×8 tracer lattice per level
 
-def temporal_persistence(ds) -> float:
-    """Mean correlation between consecutive timesteps (u and v)."""
-    u, v = ds["u"].values, ds["v"].values   # (t, L, y, x)
-    nt, nl = u.shape[0], u.shape[1]
-    if nt < 2:
-        return np.nan
-    cs = []
+
+def contiguous_segments(ds) -> list[slice]:
+    """Time-index slices of contiguous runs (a >1.5×median-dt jump ends a segment)."""
+    t = np.asarray(ds["time"].values)
+    if not np.issubdtype(t.dtype, np.datetime64) or len(t) < 2:
+        return []
+    dt = np.diff(t) / np.timedelta64(1, "h")
+    med = np.median(dt)
+    breaks = np.where(dt > 1.5 * med)[0]
+    starts = np.concatenate([[0], breaks + 1])
+    ends = np.concatenate([breaks + 1, [len(t)]])
+    return [slice(a, b) for a, b in zip(starts, ends) if b - a >= MIN_FRAMES]
+
+
+def dt_hours(ds) -> float:
+    """Hours per timestep within a contiguous run; NaN if the axis isn't real time."""
+    t = np.asarray(ds["time"].values)
+    if not np.issubdtype(t.dtype, np.datetime64) or len(t) < 2:
+        return float("nan")
+    return float(np.median(np.diff(t) / np.timedelta64(1, "h")))
+
+
+def has_time(ds) -> bool:
+    return len(contiguous_segments(ds)) > 0
+
+
+# ---------- temporal power spectrum ----------
+
+def _segment_psd(u, v, dt):
+    """Log-averaged temporal periodogram over sampled points/levels/components."""
+    nt = u.shape[0]
+    sy = max(1, u.shape[2] // PSD_MAX_POINTS)
+    sx = max(1, u.shape[3] // PSD_MAX_POINTS)
+    w = np.hanning(nt)
+    w = w / np.sqrt(np.mean(w ** 2))
+    f = np.fft.rfftfreq(nt, d=dt)[1:]              # cycles/hour, drop DC
+    logs = []
+    for a in (u, v):
+        series = a[:, :, ::sy, ::sx].reshape(nt, -1)
+        series = (series - series.mean(axis=0)) * w[:, None]
+        P = np.abs(np.fft.rfft(series, axis=0)[1:]) ** 2 * dt / nt
+        logs.append(np.log(P + 1e-30))
+    return f, np.concatenate(logs, axis=1).mean(axis=1)
+
+
+def temporal_psd(ds) -> dict:
+    """{"f": cycles/hour, "P": density}, segment-wise periodograms averaged in log space
+    on the longest segment's frequency grid."""
+    segs = contiguous_segments(ds)
+    if not segs:
+        return {"f": np.array([]), "P": np.array([])}
+    dt = dt_hours(ds)
+    u, v = ds["u"].values, ds["v"].values          # (t, L, y, x)
+    per_seg = [_segment_psd(u[s], v[s], dt) for s in segs]
+    f0 = max((f for f, _ in per_seg), key=len)
+    logs = [np.interp(np.log(f0), np.log(f), lp) for f, lp in per_seg]
+    return {"f": f0, "P": np.exp(np.mean(logs, axis=0))}
+
+
+def temporal_spectral_residual(pred_ds, ref_ds) -> tuple[dict, dict]:
+    """SR_time: RMSE of log temporal PSD over the common frequency range."""
+    pp, rr = temporal_psd(pred_ds), temporal_psd(ref_ds)
+    if not len(pp["f"]) or not len(rr["f"]):
+        return {"SR_time": np.nan}, {"pred": pp, "ref": rr}
+    lp = np.interp(np.log(rr["f"]), np.log(pp["f"]), np.log(pp["P"] + 1e-30),
+                   left=np.nan, right=np.nan)
+    lr = np.log(rr["P"] + 1e-30)
+    m = np.isfinite(lp)
+    sr = float(np.sqrt(np.mean((lp[m] - lr[m]) ** 2))) if m.any() else np.nan
+    return {"SR_time": sr}, {"pred": pp, "ref": rr}
+
+
+# ---------- trajectory dispersion ----------
+
+def _bilinear(field: np.ndarray, xp: np.ndarray, yp: np.ndarray) -> np.ndarray:
+    """Edge-clamped bilinear sample of field (y, x) at fractional pixel coords."""
+    ny, nx = field.shape
+    xp = np.clip(xp, 0, nx - 1.001)
+    yp = np.clip(yp, 0, ny - 1.001)
+    x0, y0 = xp.astype(int), yp.astype(int)
+    fx, fy = xp - x0, yp - y0
+    return ((1 - fy) * ((1 - fx) * field[y0, x0] + fx * field[y0, x0 + 1])
+            + fy * ((1 - fx) * field[y0 + 1, x0] + fx * field[y0 + 1, x0 + 1]))
+
+
+def _segment_dispersion(u, v, dt_s, dx, dy, n_side):
+    """One contiguous run: MSD(t) (m², per level) + final positions (m)."""
+    nt, nl, ny, nx = u.shape
+    gx = np.linspace(0.1 * (nx - 1), 0.9 * (nx - 1), n_side)
+    gy = np.linspace(0.1 * (ny - 1), 0.9 * (ny - 1), n_side)
+    X0, Y0 = np.meshgrid(gx * dx, gy * dy)
+    x = np.tile(X0.ravel(), (nl, 1))               # (L, P)
+    y = np.tile(Y0.ravel(), (nl, 1))
+    x0, y0 = x.copy(), y.copy()
+
+    msd = np.zeros((nt, nl))
     for t in range(nt - 1):
-        for k in range(nl):
-            for a in (u, v):
-                cs.append(np.corrcoef(a[t, k].ravel(), a[t + 1, k].ravel())[0, 1])
-    return float(np.nanmean(cs))
+        for l in range(nl):
+            k1u = _bilinear(u[t, l], x[l] / dx, y[l] / dy)
+            k1v = _bilinear(v[t, l], x[l] / dx, y[l] / dy)
+            xm, ym = x[l] + k1u * dt_s, y[l] + k1v * dt_s
+            k2u = _bilinear(u[t + 1, l], xm / dx, ym / dy)
+            k2v = _bilinear(v[t + 1, l], xm / dx, ym / dy)
+            x[l] += 0.5 * (k1u + k2u) * dt_s
+            y[l] += 0.5 * (k1v + k2v) * dt_s
+        msd[t + 1] = ((x - x0) ** 2 + (y - y0) ** 2).mean(axis=1)
+
+    spread = np.sqrt((x - x.mean(axis=1, keepdims=True)) ** 2
+                     + (y - y.mean(axis=1, keepdims=True)) ** 2).mean(axis=1)
+    return msd, spread
 
 
-def tendency_mag(ds) -> float:
-    """Mean |dV/dt| in m/s per step (hour) between consecutive frames."""
-    u, v = ds["u"].values, ds["v"].values
-    if u.shape[0] < 2:
-        return np.nan
-    du, dv = u[1:] - u[:-1], v[1:] - v[:-1]
-    return float(np.sqrt(du ** 2 + dv ** 2).mean())
-
-
-def _dt_seconds(ds) -> float:
-    """Seconds per timestep from the (datetime64) time axis; NaN if not real time."""
-    t = ds["time"].values
-    if not np.issubdtype(np.asarray(t).dtype, np.datetime64) or len(t) < 2:
-        return np.nan
-    return float((t[1] - t[0]) / np.timedelta64(1, "s"))
-
-
-def _advect_corr(sp0: np.ndarray, sp1: np.ndarray, sx: float, sy: float) -> float:
-    """Correlation between sp0 advected by (sx, sy) px and sp1, on the wrap-safe interior."""
-    isx, isy = int(round(sx)), int(round(sy))
-    rolled = np.roll(np.roll(sp0, isy, axis=0), isx, axis=1)
-    m = max(abs(isy), abs(isx)) + 1
-    if 2 * m >= min(sp0.shape):
-        a, b = rolled.ravel(), sp1.ravel()
-    else:
-        a, b = rolled[m:-m, m:-m].ravel(), sp1[m:-m, m:-m].ravel()
-    if a.std() < 1e-9 or b.std() < 1e-9:
-        return np.nan
-    return float(np.corrcoef(a, b)[0, 1])
-
-
-def structure_advection(ds) -> float:
-    """Do features MOVE WITH THE FLOW? — the truly-dynamical discriminator.
-
-    Advective predictability: shift frame ``t`` by the per-level mean-wind displacement over
-    one timestep and correlate with frame ``t+1``. If the flow carries the structure (real
-    weather, or our advective baseline) this is high; for time-incoherent frames it collapses;
-    for a smooth-but-static field that fades in place, advecting by a nonzero wind *misaligns*
-    the features, so it also drops — separating "truly dynamical" from "temporally smooth but
-    undynamical". Wind-magnitude weighted (the hypothesis is only testable where there's flow).
-    Needs a real (datetime64) time axis to convert wind → pixel displacement; else NaN.
-    """
-    dt = _dt_seconds(ds)
-    if not np.isfinite(dt):
-        return np.nan
+def trajectory_dispersion(ds, n_side: int = DISP_N_SIDE) -> dict:
+    """Segment-averaged MSD(lead time) per level + spread at the common final lead time."""
+    segs = contiguous_segments(ds)
+    if not segs:
+        return {"hours": np.array([]), "msd": np.array([]), "final spread (m)": np.array([])}
+    dt = dt_hours(ds)
     dx, dy = grid_spacing_m(ds)
-    u, v = ds["u"].values, ds["v"].values            # (t, L, y, x)
-    nt, nl = u.shape[0], u.shape[1]
-    if nt < 2:
-        return np.nan
-    num = den = 0.0
-    for t in range(nt - 1):
-        for k in range(nl):
-            wu = float(u[t, k].mean()); wv = float(v[t, k].mean())
-            sx = wu * dt / dx; sy = wv * dt / dy      # downwind pixel displacement
-            if not (np.isfinite(sx) and np.isfinite(sy)):  # NaN winds (e.g. a noise anchor) -> skip
-                continue
-            c = _advect_corr(np.hypot(u[t, k], v[t, k]), np.hypot(u[t + 1, k], v[t + 1, k]), sx, sy)
-            if not np.isfinite(c):
-                continue
-            w = np.hypot(wu, wv)                       # weight by flow strength
-            num += w * np.clip(c, 0.0, 1.0); den += w
-    return float(num / den) if den > 0 else np.nan
+    u, v = ds["u"].values, ds["v"].values
+    nlead = min(s.stop - s.start for s in segs)    # common lead-time range
+    msds, spreads = [], []
+    for s in segs:
+        m, sp = _segment_dispersion(u[s][:nlead], v[s][:nlead], dt * 3600.0, dx, dy, n_side)
+        msds.append(m)
+        spreads.append(sp)
+    return {"hours": np.arange(nlead) * dt,
+            "msd": np.mean(msds, axis=0),                    # (nlead, L)
+            "final spread (m)": np.mean(spreads, axis=0)}    # (L,)
 
 
-def drift(ds, spatial_score_fn) -> dict:
-    """Per-timestep spatial composite over time -> mean, std, slope (drift rate)."""
-    nt = ds.sizes["time"]
-    comps = np.array([spatial_score_fn(ds.isel(time=[t]))["COMPOSITE"] for t in range(nt)])
-    slope = float(np.polyfit(np.arange(nt), comps, 1)[0]) if nt > 1 else 0.0
-    return {"drift mean": float(comps.mean()), "drift std": float(comps.std()),
-            "drift slope/step": slope}
-
-
-def temporal_scores(ds, *, ref_persistence: float | None = None,
-                     ref_tendency: float | None = None) -> dict:
-    """Temporal metrics. ``score: temporal`` (legacy) just rewards persistence — it catches
-    *incoherent* frames (shuffle/noise) but would also reward a *frozen* field, so it is not a
-    realism score on its own. When ERA5 peer stats are supplied (``ref_persistence``,
-    ``ref_tendency``) we add **peer-matched** realism scores: real evolution lives in a band
-    (too-frozen and too-chaotic are both wrong), so we score *closeness* to ERA5. ``tendency``
-    is the signal that catches a too-frozen generator (low |dV/dt|); persistence catches
-    incoherent ones. ``structure advection`` is a diagnostic (tracer-like vs wave-like), not a
-    realism score — real wind patterns are quasi-stationary, not mean-wind-advected.
-    """
-    persist = temporal_persistence(ds)
-    tend = tendency_mag(ds)
-    out = {
-        "temporal persistence": persist,
-        "tendency (m/s/h)": tend,
-        "structure advection (diag)": structure_advection(ds),
-        "score: temporal": float(np.clip(persist, 0, 1)) if np.isfinite(persist) else np.nan,
-    }
-    if ref_persistence is not None and ref_tendency is not None:
-        s_persist = 1.0 - float(np.clip(abs(persist - ref_persistence), 0, 1)) \
-            if np.isfinite(persist) else np.nan
-        if np.isfinite(tend) and tend > 0 and ref_tendency > 0:
-            r = tend / ref_tendency
-            s_tend = float(min(r, 1.0 / r))
-        else:
-            s_tend = np.nan
-        out["score: persistence match"] = s_persist
-        out["score: tendency match"] = s_tend
-        out["score: temporal realism"] = float(np.nanmean([s_persist, s_tend]))
-    return out
+def dispersion_compare(pred_ds, ref_ds) -> tuple[dict, dict]:
+    """Scalars: RMSE of log MSD over common lead times (levels averaged) and the
+    pred/ref final-spread ratio averaged over levels (1 = parity)."""
+    dp, dr = trajectory_dispersion(pred_ds), trajectory_dispersion(ref_ds)
+    if not len(dp["hours"]) or not len(dr["hours"]):
+        return {"disp log-MSD RMSE": np.nan, "final spread ratio": np.nan}, {"pred": dp, "ref": dr}
+    lp = np.interp(dr["hours"][1:], dp["hours"][1:],
+                   np.log(dp["msd"][1:].mean(axis=1) + 1e-30), left=np.nan, right=np.nan)
+    lr = np.log(dr["msd"][1:].mean(axis=1) + 1e-30)
+    m = np.isfinite(lp)
+    rmse = float(np.sqrt(np.mean((lp[m] - lr[m]) ** 2))) if m.any() else np.nan
+    ratio = float(np.mean(dp["final spread (m)"] / (dr["final spread (m)"] + 1e-30)))
+    return ({"disp log-MSD RMSE": rmse, "final spread ratio": ratio},
+            {"pred": dp, "ref": dr})

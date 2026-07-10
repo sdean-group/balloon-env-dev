@@ -94,11 +94,12 @@ def run():
         ov = float(np.abs(a[:, 8:24, 8:24] - b[:, 0:16, 0:16]).max())
         chk("region-invariant on overlap (seamless)", ov == 0.0, f"max|d|={ov:g}")
 
-        # --- gate: runs + returns finite scores ---
+        # --- gate: runs + returns finite reference-based metrics (benchmark v2) ---
         r = gatemod.gate(ckpt, n=4, size=16, num_steps=6, device="cpu")
-        chk("Axis-1 gate runs + finite COMPOSITE",
-            r["finite"] and np.isfinite(r["COMPOSITE"]),
-            f"COMPOSITE {r['COMPOSITE']:.2f} (quality not asserted)")
+        sr = r["model_vs_ref"]["SR_E"]
+        chk("gate runs + finite SR_E vs training stats",
+            r["finite"] and np.isfinite(sr),
+            f"SR_E {sr:.2f}, floor {r['floor']['SR_E']:.2f} (quality not asserted)")
 
     ok = all(checks)
     print("\n" + ("ALL PASS" if ok else "SOME FAILED"))

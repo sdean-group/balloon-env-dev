@@ -1,18 +1,16 @@
-"""Single-crop Axis-1 gate (Phase 2c): does one generated crop look like wind?
+"""Single-crop training gate: do sampled crops match the training data's statistics?
 
-Before plugging the trained denoiser into the InfiniteDiffusion machinery, a *single*
-sampled crop must already pass the reference-free field-quality metrics — if a lone crop
-fails, blending many of them won't save it. This isolates the model's job (Axis-1) from
-the machinery's job (Axis-2).
+Benchmark-v2 version (see docs/benchmark-v2-changes.md): the old reference-free COMPOSITE
+is gone. The gate now samples N standalone crops (no blending) from a checkpoint, samples
+matching random crops from the *training* zarr, and reports the reference-based metrics
+between them — spectral residuals (SR_E / SR_div / SR_vort), level-averaged marginal W1,
+and tail error — next to a self-split floor (training crops vs other training crops, the
+sampling-noise level of each metric at this crop size).
 
-We sample N standalone crops (no blending), wrap them as a minimal WindArtifact-shaped
-Dataset, and run the existing ``metrics.realism.field_scores``. The COMPOSITE is
-spectrum + intermittency; we also surface ``vort/div`` as the rotational-balance
-diagnostic. Grid spacing does not affect these scores (slope, ratios and kurtosis are all
-scale-free), so the fabricated lat/lon are only there to satisfy the artifact schema.
+There is deliberately NO hard pass/fail threshold: read each value against its floor
+(`ratio` column ≈ 1 is ideal; ≲2–3 is healthy mid-training). `finite` is the only boolean.
 
-Reference points (M0 leaderboard): ERA5 ~0.93, phase-shuffle 0.57, toy 0.48, noise 0.00.
-The trained model must clear the toy's 0.48 to justify the swap.
+Runs standalone on the cluster (no jax, no package import): torch+numpy+xarray only.
 """
 from __future__ import annotations
 
@@ -23,14 +21,12 @@ import xarray as xr
 
 
 def _load_standalone():
-    """Load field_scores + TrainedWindowDenoiser WITHOUT the package (cluster path).
+    """Load the needed modules WITHOUT the package (cluster path).
 
     Run as a script (`python gate.py ...`), the relative imports below fail because there's
     no package context — and `-m src.eval...` would import `src/eval/__init__` which pulls
-    the unrelated jax/gym harness stack. So we load just the modules we need (all light:
-    torch/numpy/xarray) by file path, registering stub parent packages so their own relative
-    imports resolve, and never touching the jax stack. Lets the train->gate loop stay on the
-    GPU node with a minimal venv (torch+numpy+xarray+zarr).
+    the unrelated jax/gym harness stack. So we load just the modules we need by file path,
+    registering stub parent packages so their own relative imports resolve.
     """
     import importlib.util
     import sys
@@ -42,7 +38,7 @@ def _load_standalone():
 
     def pkg(name):
         m = types.ModuleType(name)
-        m.__path__ = []                 # mark as a package so submodule imports work
+        m.__path__ = []
         sys.modules[name] = m
 
     def mod(name, path, package):
@@ -56,24 +52,25 @@ def _load_standalone():
     for p in ("w", "w.generators", "w.generators.infinite_diffusion", "w.metrics"):
         pkg(p)
     idp = "w.generators.infinite_diffusion"
-    mod("w.artifact", windeval / "artifact.py", "w")            # realism needs ..artifact
+    mod("w.artifact", windeval / "artifact.py", "w")        # spectra needs ..artifact
     mod(f"{idp}.net", idiff / "net.py", idp)
     mod(f"{idp}.data", idiff / "data.py", idp)
-    mod(f"{idp}.trained", idiff / "trained.py", idp)            # uses .data/.net (loaded above)
-    mod("w.metrics.realism", windeval / "metrics" / "realism.py", "w.metrics")
-    return (sys.modules["w.metrics.realism"].field_scores,
-            sys.modules[f"{idp}.trained"].TrainedWindowDenoiser)
+    mod(f"{idp}.trained", idiff / "trained.py", idp)
+    sp = mod("w.metrics.spectra", windeval / "metrics" / "spectra.py", "w.metrics")
+    di = mod("w.metrics.distributions", windeval / "metrics" / "distributions.py", "w.metrics")
+    return sp, di, sys.modules[f"{idp}.trained"].TrainedWindowDenoiser
 
 
 try:
-    from ...metrics.realism import field_scores
+    from ...metrics import spectra as _spectra
+    from ...metrics import distributions as _dist
     from .trained import TrainedWindowDenoiser
 except ImportError:  # pragma: no cover - standalone script path (cluster)
-    field_scores, TrainedWindowDenoiser = _load_standalone()
+    _spectra, _dist, TrainedWindowDenoiser = _load_standalone()
 
-# fabricate ERA5-like geometry (0.25 deg ~ 28 km); see module docstring re scale-invariance.
+# fabricated ERA5-like geometry (0.25 deg); identical on both sides, so comparisons are fair
 SF_LAT, SF_LON, DEG = 37.77, 237.58, 0.25
-TOY_COMPOSITE = 0.48
+DEFAULT_REF = "src/eval/windeval/data/era5_train.zarr"
 
 
 def crops_to_dataset(crops, levels) -> xr.Dataset:
@@ -82,7 +79,7 @@ def crops_to_dataset(crops, levels) -> xr.Dataset:
     N, C, H, W = crops.shape
     L = C // 2
     f = crops.reshape(N, L, 2, H, W)
-    u, v = f[:, :, 0], f[:, :, 1]            # (N, L, H, W)
+    u, v = f[:, :, 0], f[:, :, 1]
     lat = SF_LAT + np.arange(H) * DEG
     lon = SF_LON + np.arange(W) * DEG
     return xr.Dataset(
@@ -93,9 +90,42 @@ def crops_to_dataset(crops, levels) -> xr.Dataset:
     )
 
 
+def _ref_crops(ref_path, n, size, levels, seed=0) -> xr.Dataset:
+    """N random (size×size) crops from the training zarr as a field Dataset."""
+    z = xr.open_zarr(ref_path, consolidated=False, zarr_format=2)
+    u, v = z["u"].values, z["v"].values            # (t, L, y, x)
+    rng = np.random.default_rng(seed)
+    nt, _, ny, nx = u.shape
+    us, vs = [], []
+    for _ in range(n):
+        t = rng.integers(nt)
+        y0 = rng.integers(ny - size + 1)
+        x0 = rng.integers(nx - size + 1)
+        us.append(u[t, :, y0:y0 + size, x0:x0 + size])
+        vs.append(v[t, :, y0:y0 + size, x0:x0 + size])
+    lat = SF_LAT + np.arange(size) * DEG
+    lon = SF_LON + np.arange(size) * DEG
+    return xr.Dataset(
+        {"u": (("time", "level", "y", "x"), np.stack(us).astype("float32")),
+         "v": (("time", "level", "y", "x"), np.stack(vs).astype("float32"))},
+        coords={"time": np.arange(n), "level": np.asarray(levels),
+                "lat": ("y", lat), "lon": ("x", lon)},
+    )
+
+
+def _metrics(pred_ds, ref_ds) -> dict:
+    ps, rs = _spectra.dataset_spectra(pred_ds), _spectra.dataset_spectra(ref_ds)
+    out = dict(_spectra.spectral_residual(ps, rs))
+    m, _ = _dist.marginal_w1(pred_ds, ref_ds)
+    out.update(m)
+    out.update(_dist.extreme_quantile_error(pred_ds, ref_ds))
+    return out
+
+
 def gate(
     ckpt_path: str | Path,
     *,
+    ref: str | Path = DEFAULT_REF,
     n: int = 8,
     size: int = 64,
     num_steps: int = 18,
@@ -103,53 +133,45 @@ def gate(
     device: str = "cpu",
     use_ema: bool = True,
 ) -> dict:
-    """Sample N crops from the trained denoiser and score them on Axis-1. Returns a dict."""
+    """Sample N crops, compare to training-crop statistics + a self-split floor."""
     phi = TrainedWindowDenoiser(ckpt_path, num_steps=num_steps, device=device, use_ema=use_ema)
     crops = phi.sample_crops(n, size, seed=seed).cpu().numpy()
     finite = bool(np.isfinite(crops).all())
-    ds = crops_to_dataset(crops, phi.stats.levels)
-    scores = field_scores(ds)
+    model_ds = crops_to_dataset(crops, phi.stats.levels)
 
-    composite = float(scores["COMPOSITE"])
-    result = {
-        "step": phi.step,
-        "finite": finite,
-        "spectrum slope": float(scores["spectrum slope"]),
-        "vort/div ratio": float(scores["vort/div ratio"]),
-        "increment kurtosis": float(scores["increment kurtosis"]),
-        "score: spectrum": float(scores["score: spectrum"]),
-        "score: intermittency": float(scores["score: intermittency"]),
-        "COMPOSITE": composite,
-        "beats_toy": composite >= TOY_COMPOSITE,
-    }
-    return result
+    ref_a = _ref_crops(ref, n, size, phi.stats.levels, seed=seed)
+    ref_b = _ref_crops(ref, n, size, phi.stats.levels, seed=seed + 1)
+
+    model_vs_ref = _metrics(model_ds, ref_a)
+    floor = _metrics(ref_b, ref_a)
+    return {"step": phi.step, "finite": finite,
+            "model_vs_ref": model_vs_ref, "floor": floor}
 
 
 def _print(r: dict) -> None:
-    print("\n=== Axis-1 single-crop gate ===")
-    print(f"  checkpoint step      : {r['step']}")
-    print(f"  finite sample        : {r['finite']}")
-    print(f"  spectrum slope (raw) : {r['spectrum slope']:+.2f}   (ideal ~ -3)")
-    print(f"  vort/div ratio (raw) : {r['vort/div ratio']:.2f}    (ideal > 1)")
-    print(f"  increment kurtosis   : {r['increment kurtosis']:.2f}    (ideal > 3)")
-    print(f"  score: spectrum      : {r['score: spectrum']:.2f}")
-    print(f"  score: intermittency : {r['score: intermittency']:.2f}")
-    print(f"  COMPOSITE            : {r['COMPOSITE']:.2f}   (toy {TOY_COMPOSITE}, era5 ~0.93)")
-    print(f"  beats toy (>= {TOY_COMPOSITE})   : {'YES' if r['beats_toy'] else 'no'}")
+    print("\n=== Training gate (benchmark v2: vs training-crop statistics) ===")
+    print(f"  checkpoint step : {r['step']}")
+    print(f"  finite sample   : {r['finite']}")
+    print(f"  {'metric':26s} {'model':>9s} {'floor':>9s} {'ratio':>7s}   (ratio ≈1 ideal, ≲2–3 healthy)")
+    for k, v in r["model_vs_ref"].items():
+        fl = r["floor"].get(k, float("nan"))
+        ratio = v / fl if fl and np.isfinite(fl) and fl > 0 else float("nan")
+        print(f"  {k:26s} {v:9.3f} {fl:9.3f} {ratio:7.2f}")
 
 
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
-    ap = argparse.ArgumentParser(description="Axis-1 single-crop gate for a trained denoiser.")
+    ap = argparse.ArgumentParser(description="Training gate: sampled crops vs training statistics.")
     ap.add_argument("ckpt", help="checkpoint path (.pt)")
+    ap.add_argument("--ref", default=DEFAULT_REF, help="training zarr for reference crops")
     ap.add_argument("--n", type=int, default=8)
     ap.add_argument("--size", type=int, default=64)
     ap.add_argument("--steps", type=int, default=18)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
-    _print(gate(args.ckpt, n=args.n, size=args.size, num_steps=args.steps,
+    _print(gate(args.ckpt, ref=args.ref, n=args.n, size=args.size, num_steps=args.steps,
                 device=args.device, seed=args.seed))
 
 
