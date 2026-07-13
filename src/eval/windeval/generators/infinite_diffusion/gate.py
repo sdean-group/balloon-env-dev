@@ -54,19 +54,23 @@ def _load_standalone():
     idp = "w.generators.infinite_diffusion"
     mod("w.artifact", windeval / "artifact.py", "w")        # spectra needs ..artifact
     mod(f"{idp}.net", idiff / "net.py", idp)
-    mod(f"{idp}.data", idiff / "data.py", idp)
+    da = mod(f"{idp}.data", idiff / "data.py", idp)
     mod(f"{idp}.trained", idiff / "trained.py", idp)
+    st = mod(f"{idp}.spacetime", idiff / "spacetime.py", idp)
     sp = mod("w.metrics.spectra", windeval / "metrics" / "spectra.py", "w.metrics")
     di = mod("w.metrics.distributions", windeval / "metrics" / "distributions.py", "w.metrics")
-    return sp, di, sys.modules[f"{idp}.trained"].TrainedWindowDenoiser
+    return (sp, di, sys.modules[f"{idp}.trained"].TrainedWindowDenoiser,
+            st.SpaceTimeSampler, da._time_blocks)
 
 
 try:
     from ...metrics import spectra as _spectra
     from ...metrics import distributions as _dist
+    from .data import _time_blocks
+    from .spacetime import SpaceTimeSampler
     from .trained import TrainedWindowDenoiser
 except ImportError:  # pragma: no cover - standalone script path (cluster)
-    _spectra, _dist, TrainedWindowDenoiser = _load_standalone()
+    _spectra, _dist, TrainedWindowDenoiser, SpaceTimeSampler, _time_blocks = _load_standalone()
 
 # fabricated ERA5-like geometry (0.25 deg); identical on both sides, so comparisons are fair
 SF_LAT, SF_LON, DEG = 37.77, 237.58, 0.25
@@ -113,6 +117,44 @@ def _ref_crops(ref_path, n, size, levels, seed=0) -> xr.Dataset:
     )
 
 
+def _ref_blocks(ref_path, n, size, tau, seed=0):
+    """N random τ-frame blocks from the training zarr: matched conditions + ref frames.
+
+    Returns ``(ds, conds)``: the n·τ reference frames as a field Dataset, and the per-block
+    conditioning tuples ``(lat (H,), lon (W,), times (τ,))`` at which the model should be
+    sampled — so the gate compares model vs reference **at the same locations and times**.
+    Block starts never straddle a time discontinuity (same rule as training).
+    """
+    z = xr.open_zarr(ref_path, consolidated=False, zarr_format=2)
+    u, v = z["u"].values, z["v"].values                    # (t, L, y, x)
+    lat_g = np.asarray(z["lat"].values, dtype=np.float64)
+    lon_g = np.asarray(z["lon"].values, dtype=np.float64)
+    times_g = np.asarray(z["time"].values)
+    blocks = _time_blocks(times_g)
+    starts = np.asarray([t for (a, b) in blocks for t in range(a, b - tau + 1)])
+    rng = np.random.default_rng(seed)
+    _, _, ny, nx = u.shape
+    us, vs, conds = [], [], []
+    for _ in range(n):
+        t0 = int(starts[rng.integers(len(starts))])
+        y0 = int(rng.integers(ny - size + 1))
+        x0 = int(rng.integers(nx - size + 1))
+        us.append(u[t0:t0 + tau, :, y0:y0 + size, x0:x0 + size])
+        vs.append(v[t0:t0 + tau, :, y0:y0 + size, x0:x0 + size])
+        conds.append((lat_g[y0:y0 + size], lon_g[x0:x0 + size], times_g[t0:t0 + tau]))
+    u_all = np.concatenate(us, axis=0)                     # (n*τ, L, H, W)
+    v_all = np.concatenate(vs, axis=0)
+    lat = SF_LAT + np.arange(size) * DEG
+    lon = SF_LON + np.arange(size) * DEG
+    ds = xr.Dataset(
+        {"u": (("time", "level", "y", "x"), u_all.astype("float32")),
+         "v": (("time", "level", "y", "x"), v_all.astype("float32"))},
+        coords={"time": np.arange(u_all.shape[0]), "level": np.asarray(z["level"].values),
+                "lat": ("y", lat), "lon": ("x", lon)},
+    )
+    return ds, conds
+
+
 def _metrics(pred_ds, ref_ds) -> dict:
     ps, rs = _spectra.dataset_spectra(pred_ds), _spectra.dataset_spectra(ref_ds)
     out = dict(_spectra.spectral_residual(ps, rs))
@@ -133,18 +175,42 @@ def gate(
     device: str = "cpu",
     use_ema: bool = True,
 ) -> dict:
-    """Sample N crops, compare to training-crop statistics + a self-split floor."""
-    phi = TrainedWindowDenoiser(ckpt_path, num_steps=num_steps, device=device, use_ema=use_ema)
-    crops = phi.sample_crops(n, size, seed=seed).cpu().numpy()
+    """Sample N crops (or τ-frame blocks), compare to training statistics + a floor.
+
+    Static checkpoints: N independent crops vs N random training crops (as before).
+    Spacetime checkpoints (``cfg["spacetime"]``): N τ-frame blocks; conditional ones are
+    sampled at the SAME (lat, lon, times) as the matched reference blocks, so the gate is
+    condition-matched. Metrics pool the n·τ frames on each side.
+    """
+    import torch
+
+    cfg = torch.load(Path(ckpt_path), map_location="cpu", weights_only=False)["cfg"]
+    if cfg.get("spacetime"):
+        sampler = SpaceTimeSampler(ckpt_path, num_steps=num_steps, device=device,
+                                   use_ema=use_ema)
+        tau = sampler.tau
+        ref_a, conds = _ref_blocks(ref, n, size, tau, seed=seed)
+        ref_b, _ = _ref_blocks(ref, n, size, tau, seed=seed + 1)
+        frames = []
+        for i, (la, lo, ts) in enumerate(conds):
+            kw = dict(lat=la, lon=lo, times=ts) if sampler.conditional else {}
+            us, vs = sampler.sample_block((size, size), seed=seed + i, **kw)
+            frames.append(np.stack([us, vs], axis=2).reshape(tau, -1, size, size))
+        crops = np.concatenate(frames, axis=0)               # (n*τ, 2L, H, W)
+        step, levels = sampler.step, sampler.stats.levels
+    else:
+        phi = TrainedWindowDenoiser(ckpt_path, num_steps=num_steps, device=device,
+                                    use_ema=use_ema)
+        crops = phi.sample_crops(n, size, seed=seed).cpu().numpy()
+        step, levels = phi.step, phi.stats.levels
+        ref_a = _ref_crops(ref, n, size, levels, seed=seed)
+        ref_b = _ref_crops(ref, n, size, levels, seed=seed + 1)
+
     finite = bool(np.isfinite(crops).all())
-    model_ds = crops_to_dataset(crops, phi.stats.levels)
-
-    ref_a = _ref_crops(ref, n, size, phi.stats.levels, seed=seed)
-    ref_b = _ref_crops(ref, n, size, phi.stats.levels, seed=seed + 1)
-
+    model_ds = crops_to_dataset(crops, levels)
     model_vs_ref = _metrics(model_ds, ref_a)
     floor = _metrics(ref_b, ref_a)
-    return {"step": phi.step, "finite": finite,
+    return {"step": step, "finite": finite,
             "model_vs_ref": model_vs_ref, "floor": floor}
 
 

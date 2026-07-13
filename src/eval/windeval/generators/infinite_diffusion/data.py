@@ -194,6 +194,70 @@ def _augment_pair(xt: torch.Tensor, xtp1: torch.Tensor, L: int, c: int,
     return gt.reshape(n, c, c).contiguous(), gp.reshape(n, c, c).contiguous()
 
 
+# --------------------------------------------------------------- conditioning features
+@dataclass
+class CoordNorm:
+    """Training-domain coordinate normalization: (coord - center) / half_width -> ~[-1, 1].
+
+    Stored in the checkpoint so inference normalizes lat/lon identically. ``wrap_lon``
+    maps an inference longitude onto the training convention (0–360 vs ±180) before
+    normalizing — the two conventions differ by a silent 360° branch.
+    """
+
+    lat0: float
+    lat_half: float
+    lon0: float
+    lon_half: float
+
+    @classmethod
+    def from_grid(cls, lat: np.ndarray, lon: np.ndarray) -> "CoordNorm":
+        return cls(
+            lat0=float((lat.max() + lat.min()) / 2), lat_half=float((lat.max() - lat.min()) / 2),
+            lon0=float((lon.max() + lon.min()) / 2), lon_half=float((lon.max() - lon.min()) / 2),
+        )
+
+    def wrap_lon(self, lon: np.ndarray) -> np.ndarray:
+        lon = np.asarray(lon, dtype=np.float64)
+        lon = np.where(lon - self.lon0 > 180.0, lon - 360.0, lon)
+        lon = np.where(lon - self.lon0 < -180.0, lon + 360.0, lon)
+        return lon
+
+    def channels(self, lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+        """Per-pixel coord channels for a window: lat (H,), lon (W,) -> (2, H, W) float32."""
+        la = (np.asarray(lat, dtype=np.float64) - self.lat0) / self.lat_half
+        lo = (self.wrap_lon(lon) - self.lon0) / self.lon_half
+        H, W = len(la), len(lo)
+        out = np.empty((2, H, W), dtype=np.float32)
+        out[0] = la[:, None]
+        out[1] = lo[None, :]
+        return out
+
+    def to_dict(self) -> dict:
+        return {"lat0": self.lat0, "lat_half": self.lat_half,
+                "lon0": self.lon0, "lon_half": self.lon_half}
+
+
+N_TIME_FEATURES = 6
+
+
+def time_features(times: np.ndarray) -> np.ndarray:
+    """Cyclic time harmonics for datetime64 stamps -> (len(times), 6) float32.
+
+    Columns: [sin, cos] annual phase, [sin, cos] semiannual phase, [sin, cos] diurnal
+    phase (UTC hour — local solar time is a learnable lon/15 offset given the coordinate
+    channels). Years are exchangeable by construction: only the phase within the
+    year/day enters. Low-order harmonics keep the encoding smooth in date, so a single
+    training year cannot be memorized day-by-day.
+    """
+    t = np.asarray(times).astype("datetime64[s]")
+    doy = (t - t.astype("datetime64[Y]")).astype("timedelta64[s]").astype(np.float64) / 86400.0
+    hod = (t - t.astype("datetime64[D]")).astype("timedelta64[s]").astype(np.float64) / 3600.0
+    a = 2.0 * np.pi * doy / 365.25
+    d = 2.0 * np.pi * hod / 24.0
+    return np.stack([np.sin(a), np.cos(a), np.sin(2 * a), np.cos(2 * a),
+                     np.sin(d), np.cos(d)], axis=-1).astype(np.float32)
+
+
 def _time_blocks(times: np.ndarray, *, step_tol: float = 1.5) -> list[tuple[int, int]]:
     """Split a time axis into contiguous blocks at gaps larger than the median step.
 
@@ -362,3 +426,43 @@ class WindSpaceTimeDataset(Dataset):
                 g[:, :, 1] = -g[:, :, 1]
             x = g.reshape(self.n_frames, self.n_channels, c, c).contiguous()
         return x
+
+
+class WindCondSpaceTimeDataset(WindSpaceTimeDataset):
+    """Conditional H×W×τ blocks: (block, coord channels, per-frame time features).
+
+    The Phase-5 conditional dataset. Yields
+    ``(x, coords, tfeat)`` = (normalised ``(τ, 2L, crop, crop)`` block,
+    ``(2, crop, crop)`` per-pixel lat/lon channels via :class:`CoordNorm`,
+    ``(τ, 6)`` cyclic time harmonics via :func:`time_features`).
+
+    Reflection augmentation is DISABLED regardless of the flag: mirroring the field while
+    keeping coordinates teaches false geography, and mirroring both trains on a mirrored
+    Earth that never occurs at inference (phase-5 decision — real 2023 data replaces it).
+    """
+
+    def __init__(self, zarr_path: str | Path, **kw) -> None:
+        kw["augment"] = False
+        super().__init__(zarr_path, **kw)
+        ds = xr.open_zarr(zarr_path, consolidated=False, zarr_format=2)
+        self.lat = np.asarray(ds["lat"].values, dtype=np.float64)
+        self.lon = np.asarray(ds["lon"].values, dtype=np.float64)
+        self.times = np.asarray(ds["time"].values)
+        self.coord_norm = CoordNorm.from_grid(self.lat, self.lon)
+        self.n_cond_channels = 2
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        rng = np.random.default_rng(self.seed * 1_000_003 + idx)
+        t0 = int(self.block_starts[rng.integers(len(self.block_starts))])
+        y0 = int(rng.integers(self.Y - self.crop + 1))
+        x0 = int(rng.integers(self.X - self.crop + 1))
+        c = self.crop
+        ts = [t0 + k * self.frame_stride for k in range(self.n_frames)]
+        u = self.u[ts][:, :, y0:y0 + c, x0:x0 + c]      # (τ,L,c,c)
+        v = self.v[ts][:, :, y0:y0 + c, x0:x0 + c]
+        f = np.stack([u, v], axis=2).reshape(self.n_frames, self.n_channels, c, c)
+        x = self.stats.normalize(torch.from_numpy(f))   # (τ,C,c,c)
+        coords = torch.from_numpy(
+            self.coord_norm.channels(self.lat[y0:y0 + c], self.lon[x0:x0 + c]))
+        tfeat = torch.from_numpy(time_features(self.times[ts]))
+        return x, coords, tfeat

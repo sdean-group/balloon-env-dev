@@ -109,6 +109,53 @@ def ingest(grib_paths: list[str], out_path: str, *, levels: tuple[int, int]) -> 
     return artifact.write(ds, attrs, out_path)
 
 
+def ingest_stream(grib_paths: list[str], out_path: str, *, levels: tuple[int, int]) -> Path:
+    """Constant-memory ingest: append each grib chunk to the zarr in the order given.
+
+    The in-RAM :func:`ingest` concatenates the whole download (a full hourly year is
+    ~28 GB peak — dies on a laptop); this one holds a single ~7-day chunk (~350 MB) at a
+    time. Chunks MUST be passed in ascending time order (checked; no global sort).
+    """
+    last_time = None
+    out = Path(out_path)
+    total = 0
+    for i, gp in enumerate(grib_paths):
+        src = xr.open_dataset(gp, engine="cfgrib")
+        u, v = src["u"].values, src["v"].values
+        if u.ndim == 3:
+            u, v = u[None], v[None]
+        time = np.atleast_1d(src["valid_time"].values)
+        order = np.argsort(time)
+        u, v, time = u[order].astype("float32"), v[order].astype("float32"), time[order]
+        if last_time is not None and time[0] <= last_time:
+            raise ValueError(f"{gp}: starts at {time[0]} <= previous chunk end {last_time} "
+                             "(pass --dates in ascending order when using --stream)")
+        last_time = time[-1]
+        level = src["hybrid"].values.astype(int)
+        lat = src["latitude"].values.astype(float)
+        lon = src["longitude"].values.astype(float)
+        ds = artifact.make_field(u, v, level=level, lat=lat, lon=lon, time=time)
+        if i == 0:
+            band = {int(n): list(_AB[int(n)]) for n in range(levels[0] - 1, levels[1] + 1)}
+            attrs = artifact.default_attrs(
+                generator={"name": "era5_train",
+                           "config": {"sources": [Path(p).name for p in grib_paths]}},
+                capabilities={"extent": "bounded", "tiled": False,
+                              "random_access": True, "temporally_evolving": True},
+                conditioning={"region": "multi", "purpose": "phase2_training"},
+                model_levels=level,
+                coord_to_meters="tangent_plane",
+            )
+            attrs["level_coeffs"] = band
+            artifact.write(ds, attrs, out)
+        else:
+            ds.to_zarr(out, mode="a", append_dim="time", consolidated=False, zarr_format=2)
+        total += len(time)
+        print(f"[ingest --stream] {Path(gp).name}: +{len(time)} steps (total {total})",
+              flush=True)
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Download + ingest ERA5 model-level u,v for training.")
     ap.add_argument("--out", required=True, help="output training zarr path")
@@ -122,6 +169,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="N/W/S/E (slash-separated; negative lon OK, e.g. 55/-135/25/-105)")
     ap.add_argument("--levels", type=int, nargs=2, default=[49, 66])
     ap.add_argument("--skip-download", action="store_true", help="ingest existing gribs only")
+    ap.add_argument("--stream", action="store_true",
+                    help="constant-memory ingest (append per chunk; --dates must be ascending)")
     args = ap.parse_args(argv)
 
     levels = (args.levels[0], args.levels[1])
@@ -132,9 +181,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args.skip_download:
         for gp, dspec in zip(gribs, args.dates):
+            if Path(gp).exists():                      # resumable: re-run skips finished chunks
+                print(f"[download] {dspec_summary(dspec)} -> {gp} (exists, skipping)")
+                continue
             print(f"[download] {dspec_summary(dspec)} -> {gp}")
-            download(gp, dates=dspec, time=args.time, area=area, levels=levels)
-    out = ingest(gribs, args.out, levels=levels)
+            download(gp + ".part", dates=dspec, time=args.time, area=area, levels=levels)
+            Path(gp + ".part").rename(gp)
+    ingest_fn = ingest_stream if args.stream else ingest
+    out = ingest_fn(gribs, args.out, levels=levels)
     print(f"[done] -> {out}")
 
 

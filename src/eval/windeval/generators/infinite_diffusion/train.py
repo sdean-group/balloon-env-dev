@@ -32,11 +32,13 @@ from torch.utils.data import DataLoader
 # cluster — `python .../train.py` puts this dir on sys.path[0], so the absolute fallback
 # resolves WITHOUT importing src/eval/__init__ (which pulls the unrelated jax/gym stack).
 try:
-    from .data import NormStats, WindCropDataset, WindPairDataset, WindSpaceTimeDataset
+    from .data import (N_TIME_FEATURES, NormStats, WindCondSpaceTimeDataset,
+                       WindCropDataset, WindPairDataset, WindSpaceTimeDataset)
     from .net import EDMPrecond
     from .spacetime import EDMPrecondSpaceTime
 except ImportError:  # pragma: no cover - standalone script path
-    from data import NormStats, WindCropDataset, WindPairDataset, WindSpaceTimeDataset
+    from data import (N_TIME_FEATURES, NormStats, WindCondSpaceTimeDataset,
+                      WindCropDataset, WindPairDataset, WindSpaceTimeDataset)
     from net import EDMPrecond
     from spacetime import EDMPrecondSpaceTime
 
@@ -62,6 +64,13 @@ class TrainConfig:
     spacetime: bool = False
     n_frames: int = 4
     temporal_kernel: int = 3
+
+    # --- conditioning (Phase 5, requires spacetime) ---
+    # conditional=True trains p(block | location, time): per-pixel lat/lon coord channels
+    # (clean, concat at input) + per-frame cyclic time harmonics (via the emb pathway).
+    # Forces augment off (reflection is geographically wrong for a located model); the
+    # dataset's CoordNorm is saved in the checkpoint so inference normalizes identically.
+    conditional: bool = False
 
     model_channels: int = 128
     channel_mult: tuple[int, ...] = (1, 2, 2)
@@ -155,9 +164,10 @@ class EMA:
 
 
 # --------------------------------------------------------------------------- checkpoint
-def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: TrainConfig) -> None:
+def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: TrainConfig,
+              coord_norm: dict | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
+    payload = {
         "model": model.state_dict(),
         "ema": ema.shadow.state_dict(),
         "opt": opt.state_dict(),
@@ -165,7 +175,10 @@ def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: Train
         "stats": {"mean_u": stats.mean_u, "std_u": stats.std_u,
                   "mean_v": stats.mean_v, "std_v": stats.std_v, "levels": stats.levels},
         "cfg": cfg.__dict__,
-    }, path)
+    }
+    if coord_norm is not None:
+        payload["coord_norm"] = coord_norm
+    torch.save(payload, path)
 
 
 def build_model(cfg: TrainConfig, n_channels: int):
@@ -174,6 +187,8 @@ def build_model(cfg: TrainConfig, n_channels: int):
             n_channels,
             tau=cfg.n_frames,
             sigma_data=cfg.sigma_data,
+            cond_channels=(2 if cfg.conditional else 0),
+            time_features=(N_TIME_FEATURES if cfg.conditional else 0),
             net_kwargs=dict(
                 model_channels=cfg.model_channels,
                 channel_mult=tuple(cfg.channel_mult),
@@ -212,8 +227,18 @@ def train(cfg: TrainConfig) -> Path:
 
     if cfg.paired and cfg.spacetime:
         raise ValueError("paired (M3) and spacetime (M2) are mutually exclusive")
+    if cfg.conditional and not cfg.spacetime:
+        raise ValueError("conditional requires spacetime=True (the Phase-5 M2 route)")
     length = cfg.batch_size * cfg.n_steps
-    if cfg.spacetime:
+    coord_norm = None
+    if cfg.conditional:
+        dataset = WindCondSpaceTimeDataset(cfg.data_path, crop=cfg.crop, levels=cfg.levels,
+                                           n_frames=cfg.n_frames, frame_stride=cfg.frame_stride,
+                                           length=length, seed=cfg.seed)
+        coord_norm = dataset.coord_norm.to_dict()
+        mode_note = (f"  | CONDITIONAL SPACETIME (τ={cfg.n_frames}, stride {cfg.frame_stride}, "
+                     f"{len(dataset.block_starts)} block starts, coord_norm={coord_norm})")
+    elif cfg.spacetime:
         dataset = WindSpaceTimeDataset(cfg.data_path, crop=cfg.crop, levels=cfg.levels,
                                        n_frames=cfg.n_frames, frame_stride=cfg.frame_stride,
                                        augment=cfg.augment, length=length, seed=cfg.seed)
@@ -259,7 +284,13 @@ def train(cfg: TrainConfig) -> Path:
     for batch in loader:
         if step >= cfg.n_steps:
             break
-        if cfg.paired:
+        tfeat = None
+        if cfg.conditional:
+            x0, cond, tfeat = batch                           # (block, coords, time features)
+            x0 = x0.to(device, non_blocking=True)
+            cond = cond.to(device, non_blocking=True)
+            tfeat = tfeat.to(device, non_blocking=True)
+        elif cfg.paired:
             cond, x0 = batch                                  # (frame_t, frame_{t+stride})
             cond = cond.to(device, non_blocking=True)
             x0 = x0.to(device, non_blocking=True)
@@ -270,7 +301,12 @@ def train(cfg: TrainConfig) -> Path:
             g["lr"] = lr
 
         opt.zero_grad(set_to_none=True)
-        loss = model.loss(x0) if cfg.spacetime else model.loss(x0, cond=cond)
+        if cfg.conditional:
+            loss = model.loss(x0, cond=cond, tfeat=tfeat)
+        elif cfg.spacetime:
+            loss = model.loss(x0)
+        else:
+            loss = model.loss(x0, cond=cond)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
@@ -285,12 +321,14 @@ def train(cfg: TrainConfig) -> Path:
             running = 0.0
             t0 = time.time()
         if step % cfg.ckpt_every == 0:
-            save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats, cfg=cfg)
+            save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats,
+                      cfg=cfg, coord_norm=coord_norm)
             save_ckpt(out / f"step_{step}.pt", model=model, ema=ema, opt=opt,
-                      step=step, stats=stats, cfg=cfg)
+                      step=step, stats=stats, cfg=cfg, coord_norm=coord_norm)
             print(f"[train] checkpoint @ step {step}")
 
-    save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats, cfg=cfg)
+    save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats,
+              cfg=cfg, coord_norm=coord_norm)
     print(f"[train] done @ step {step} -> {latest}")
     return latest
 
