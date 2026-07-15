@@ -34,7 +34,8 @@ METRIC_INFO = {
     "W1 v (m/s)":              ("lower", "per-level marginal W1 of v, level-averaged"),
     "tail err 1% (m/s)":       ("lower", "|q_pred−q_ref| at 1/99%, levels+components avg"),
     "tail err 0.1% (m/s)":     ("lower", "|q_pred−q_ref| at 0.1/99.9%"),
-    "W1 cond (m/s)":           ("lower", "N-seed pooled per-level W1 (one condition for now)"),
+    "W1 cond (m/s)":           ("lower", "seed-pooled per-level W1 at fixed conditions; "
+                                         "conditional rows use (location, month, hour)"),
     "SR_time":                 ("lower", "log temporal-PSD RMSE vs ref"),
     "disp log-MSD RMSE":       ("lower", "tracer mean-square-displacement curve vs ref"),
     "final spread ratio":      ("≈1",    "tracer final position spread, pred/ref"),

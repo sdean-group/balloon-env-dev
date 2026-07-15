@@ -19,6 +19,9 @@ Rows (distilled set, Shaurya 2026-07-10 — each earns its place; see changes do
                         distribution metrics and brackets the diffusion failure mode
   ble_vae               prior state of the art; the row to beat (SF-box climate caveat)
   idiff trained         the model (--ckpt)
+  idiff m2cond          the conditional space-time model (--cond-ckpt), sampled at
+                        held-out (month, day, hour) conditions over the center window;
+                        the only row with the real (location, month, hour) W1_cond
   --temporal adds:      kinematic toy (mean-wind advection = the no-learned-dynamics
                         floor) + M2/M3 rows when their checkpoints exist
 Dropped from the board (calibration lives on in test_metrics_v2.py regardless):
@@ -43,6 +46,7 @@ from . import artifact
 from .reference import build_heldout, split
 from .anchors import _phase_randomize
 from .metrics import run_suite, tiling_penalty, climatological_dz
+from .metrics.distributions import conditional_w1_grouped
 from .metrics.suite import METRIC_INFO
 
 DATA = Path(__file__).resolve().parent / "data"
@@ -55,7 +59,17 @@ COLORS = {
     "idiff trained": "#2a78d6", "idiff toy": "#1baf7a", "ble_vae": "#eda100",
     "phase shuffle": "#4a3aa7", "white noise": "#e34948",
     "kinematic toy": "#e87ba4", "time shuffled": "#eb6834",
+    "idiff m2cond": "#0ea5b7",
 }
+
+# W1_cond protocol (Shaurya 2026-07-14): a condition = (the fixed 64² center window,
+# month, hour-of-day). Reference pool = that hour on each held-out day 8–14 (the time
+# harmonics are bandlimited below day-scale, so day-to-day variability IS the
+# within-condition distribution); model pool = COND_SEEDS draws at those same timestamps.
+COND_MONTHS = (1, 4, 7, 10)
+COND_HOURS = (0, 12)
+COND_DAYS = tuple(range(8, 15))
+COND_SEEDS = 2
 
 
 def _like(ds, u, v):
@@ -115,6 +129,86 @@ def _trained_artifacts(ckpt: str, *, regen: bool, num_steps: int = 18):
     crops = phi.sample_crops(8, 64, seed=1).cpu().numpy()
     seeds = [crops_to_dataset(crops[i:i + 1], phi.stats.levels) for i in range(len(crops))]
     return artifact.read(multi), artifact.read(single), seeds
+
+
+def _cond_window(ref):
+    """The fixed 64² window centered on the reference grid (single-location protocol)."""
+    y0 = (ref.sizes["y"] - 64) // 2
+    x0 = (ref.sizes["x"] - 64) // 2
+    return y0, x0, ref["lat"].values[y0:y0 + 64], ref["lon"].values[x0:x0 + 64]
+
+
+def _cond_ref(ref, y0, x0, month, hour, days):
+    """Reference fields at one (window, month, hour) condition, for the given days."""
+    t = ref["time"]
+    sel = ((t.dt.month == month) & (t.dt.hour == hour) & t.dt.day.isin(list(days)))
+    return ref.sel(time=sel).isel(y=slice(y0, y0 + 64), x=slice(x0, x0 + 64)).compute()
+
+
+def _cond_floor_groups(ref):
+    """Condition-matched W1_cond floor: days 8–10 vs 11–14 at each (month, hour)."""
+    from .reference import SPLIT_DAY
+    y0, x0, _, _ = _cond_window(ref)
+    lo = [d for d in COND_DAYS if d < SPLIT_DAY]
+    hi = [d for d in COND_DAYS if d >= SPLIT_DAY]
+    return [( [_cond_ref(ref, y0, x0, m, h, lo)], _cond_ref(ref, y0, x0, m, h, hi) )
+            for m in COND_MONTHS for h in COND_HOURS]
+
+
+def _conditional_artifacts(ckpt: str, ref, *, regen: bool, num_steps: int = 18):
+    """(pooled seed-0 block Dataset, W1_cond condition groups) for the conditional model.
+
+    Samples one τ-frame block per (month, day, hour, seed) over the fixed center window.
+    The pooled dataset keeps real timestamps, so the temporal metrics run on τ-frame
+    segments — 3 lead hours is all a τ=4 block supports (see report caveat).
+    """
+    from .generators.infinite_diffusion.spacetime import SpaceTimeSampler
+
+    y0, x0, lat, lon = _cond_window(ref)
+    conds = [(m, d, h) for m in COND_MONTHS for h in COND_HOURS for d in COND_DAYS]
+    cache = DATA / "idiff_m2cond_blocks.npz"
+    if regen or not cache.exists():
+        sampler = SpaceTimeSampler(ckpt, num_steps=num_steps, device=_pick_device())
+        blocks, times = [], []
+        for i, (m, d, h) in enumerate(conds):
+            ts = (np.datetime64(f"2023-{m:02d}-{d:02d}T{h:02d}", "h")
+                  + np.arange(sampler.tau).astype("timedelta64[h]"))
+            for s in range(COND_SEEDS):
+                print(f"[bench] m2cond block {i * COND_SEEDS + s + 1}/"
+                      f"{len(conds) * COND_SEEDS} (2023-{m:02d}-{d:02d} {h:02d}h "
+                      f"seed {s}) …", flush=True)
+                us, vs = sampler.sample_block((64, 64), seed=i * COND_SEEDS + s,
+                                              lat=lat, lon=lon, times=ts)
+                blocks.append(np.stack([us, vs], axis=2))     # (τ, L, 2, H, W)
+                times.append(ts)
+        np.savez(cache, blocks=np.asarray(blocks, dtype="float32"),
+                 times=np.asarray(times),
+                 month=np.repeat([c[0] for c in conds], COND_SEEDS),
+                 day=np.repeat([c[1] for c in conds], COND_SEEDS),
+                 hour=np.repeat([c[2] for c in conds], COND_SEEDS),
+                 seed_idx=np.tile(np.arange(COND_SEEDS), len(conds)),
+                 levels=sampler.stats.levels)
+    z = np.load(cache)
+    blocks, times, levels = z["blocks"], z["times"], z["levels"]
+
+    # main row: seed-0 blocks pooled with their real (sorted) timestamps
+    s0 = z["seed_idx"] == 0
+    u = blocks[s0][:, :, :, 0].reshape(-1, len(levels), 64, 64)
+    v = blocks[s0][:, :, :, 1].reshape(-1, len(levels), 64, 64)
+    t = times[s0].ravel()
+    order = np.argsort(t)
+    pooled = artifact.make_field(u[order], v[order], level=levels,
+                                 lat=lat, lon=lon, time=t[order])
+
+    # W1_cond groups: frame 0 (the exact condition hour) of every block at (month, hour)
+    groups = []
+    for m in COND_MONTHS:
+        for h in COND_HOURS:
+            at = (z["month"] == m) & (z["hour"] == h)
+            seeds = [artifact.make_field(b[0, :, 0], b[0, :, 1], level=levels,
+                                         lat=lat, lon=lon) for b in blocks[at]]
+            groups.append((seeds, _cond_ref(ref, y0, x0, m, h, COND_DAYS)))
+    return pooled, groups
 
 
 def _kinematic_toy(ckpt: str, *, regen: bool, n_times: int = 48):
@@ -269,7 +363,7 @@ TEMPORAL_METRICS = ["SR_time", "disp log-MSD RMSE", "final spread ratio"]
 
 
 def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
-        temporal: bool = False) -> str:
+        temporal: bool = False, cond_ckpt: str | None = None) -> str:
     DATA.mkdir(exist_ok=True)
     ref = artifact.read(build_heldout())
     ref_sp = ref.isel(time=slice(0, None, SPATIAL_STRIDE_H)).compute()
@@ -292,6 +386,8 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
 
     # floor + anchors (floor is half-vs-half; anchors score vs the full ref)
     score("self-split floor", a_sp, ref_s=b_sp, ref_t=half_b)
+    # condition-matched W1_cond floor: days 8–10 vs 11–14 at each (month, hour)
+    scores["self-split floor"].update(conditional_w1_grouped(_cond_floor_groups(ref)))
     for name, ds in _anchor_rows(a_sp).items():
         score(name, ds)
 
@@ -312,6 +408,16 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
     elif generate:
         print(f"[bench] no checkpoint at {ckpt} — skipping trained rows")
 
+    # the conditional model (location+time), sampled at held-out conditions.
+    # No tiling-penalty row yet: multi-tile needs per-tile coords in the
+    # InfiniteDiffusion wrapper — deferred until single-block results are read.
+    if generate and cond_ckpt and Path(cond_ckpt).exists():
+        pooled, groups = _conditional_artifacts(cond_ckpt, ref, regen=regen)
+        score("idiff m2cond", pooled)
+        scores["idiff m2cond"].update(conditional_w1_grouped(groups))
+    elif generate and cond_ckpt:
+        print(f"[bench] no conditional checkpoint at {cond_ckpt} — skipping m2cond row")
+
     figs = _figures(details, datasets, ref_sp)
 
     # ---- report ----
@@ -328,8 +434,15 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
         "compared range (the value shown is the finest compared wavelength).", "",
         "## Data distribution", "",
         *_table(scores, DIST_METRICS), "",
-        "`W1 cond` samples N=8 seed-crops under the single (unconditional) condition — see "
-        "changes doc; real per-condition averaging starts when the conditioning layer lands.", "",
+        "`W1 cond` protocol: a condition = (fixed 64² center window, month, hour-of-day); "
+        "reference pool = that hour on each held-out day 8–14, model pool = seeds at those "
+        "same timestamps, averaged over the 8 conditions. The floor row uses the "
+        "condition-matched split (days 8–10 vs 11–14). Unconditional rows (`idiff trained`) "
+        "still report the degenerate one-condition version — not comparable across those "
+        "two protocols. `idiff m2cond` rows: temporal metrics are N/A (τ=4-frame blocks "
+        "are below the suite's 16-frame segment minimum — temporal tiling unlocks them) "
+        "and its spatial/dist rows are the 64² center window vs the full reference; no "
+        "tiling penalty yet (per-tile coords in the wrapper are deferred).", "",
         "## Physical consistency — temporal", "",
         *_table(scores, TEMPORAL_METRICS), "",
         "Caveats: `ble_vae` is the SF box at 0.45° with 10 arbitrary levels — its "
@@ -362,6 +475,9 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Benchmark v2 — unified leaderboard.")
     ap.add_argument("--ckpt", default="runs/idiff_m1/step_84000.pt")
+    ap.add_argument("--cond-ckpt", default="runs/idiff_m2cond/latest.pt",
+                    help="conditional spacetime checkpoint (adds the idiff m2cond row; "
+                         "skipped with a message if the file is missing)")
     ap.add_argument("--no-generate", action="store_true",
                     help="skip rows that need torch generation (anchors/ble only)")
     ap.add_argument("--regen", action="store_true",
@@ -369,7 +485,8 @@ def main(argv=None):
     ap.add_argument("--temporal", action="store_true",
                     help="add the temporal rows (kinematic toy; M2/M3 when their ckpts land)")
     args = ap.parse_args(argv)
-    run(args.ckpt, generate=not args.no_generate, regen=args.regen, temporal=args.temporal)
+    run(args.ckpt, generate=not args.no_generate, regen=args.regen,
+        temporal=args.temporal, cond_ckpt=args.cond_ckpt)
 
 
 if __name__ == "__main__":

@@ -6,9 +6,13 @@
     as |q_pred − q_ref| at 0.1/1/99/99.9%, averaged over levels and both components.
   - Conditional W1: fix a condition, draw N seeds from the generator, pool their values
     per level and compare to the ERA5 realizations matching that condition; the scalar is
-    the average over conditions. NOTE: until the generator grows a conditioning layer
-    there is exactly one condition (= the training climate), so this degenerates to an
-    N-seed pooled marginal W1 — the machinery is condition-ready, the model isn't.
+    the average over conditions. For unconditional generators there is exactly one
+    condition (= the training climate) and this degenerates to an N-seed pooled marginal
+    W1. For the conditional model a condition is (location, month, hour-of-day) — Shaurya
+    2026-07-14: the reference pool for a condition is that hour on each of the held-out
+    days 8–14 (the harmonics cannot resolve individual days, so day-of-week variability
+    IS the within-condition distribution), and the model pool is seeds sampled at those
+    same timestamps. `conditional_w1_grouped` averages over such condition groups.
 
 All W1s are computed on quantile grids (the exact 1D W1 is the integral of the quantile
 difference; 1024 points is plenty for these sample sizes) and carry the units of the
@@ -74,3 +78,12 @@ def conditional_w1(seed_datasets, ref_ds) -> dict:
             pooled = np.concatenate([d[var].values[:, l].ravel() for d in seed_list])
             w1.append(wasserstein1(pooled, ref_lv[l]))
     return {"W1 cond (m/s)": float(np.mean(w1))}
+
+
+def conditional_w1_grouped(groups) -> dict:
+    """Mean of `conditional_w1` over condition groups (see module doc for the protocol).
+
+    `groups`: iterable of (seed_datasets, ref_ds_at_condition) pairs, one per condition.
+    """
+    vals = [conditional_w1(seeds, ref)["W1 cond (m/s)"] for seeds, ref in groups]
+    return {"W1 cond (m/s)": float(np.mean(vals)) if vals else np.nan}
