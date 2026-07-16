@@ -1,0 +1,37 @@
+# M3 AUTOREGRESSIVE temporal config — train p(frame_{t+1} | frame_t) on Kahan.
+# The previous frame is concatenated as clean conditioning channels (cond_channels = 2*n_levels
+# = 36), so the net's in_conv sees 4L = 72 input channels; output stays 2L = 36. Everything else
+# mirrors the static era5_sf run. Rolls forward at inference via autoregressive.ConditionedDenoiser.
+#
+# frame_stride is THE knob to sweep (the temporal step size): 1 = native hourly cadence; raise to
+# 3/6/12 for GenCast-style coarser steps (more dynamics per step, shorter rollouts, less drift).
+# Sweep it as separate runs (out_dir per stride) once the stride-1 baseline trains.
+data:
+  data_path: src/eval/windeval/data/era5_temporal.zarr   # contiguous hourly, 4 seasonal blocks
+  crop: 64
+  levels: [49, 66]
+  augment: true
+
+# --- temporal (M3) ---
+paired: true
+frame_stride: 1                   # native hourly; sweep {1,3,6,12} as separate runs
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]      # 64 -> 32 -> 16 -> 8 ; attn at the two coarsest
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  sigma_data: 1.0
+
+train:
+  batch_size: 128                 # conditioning only widens in_conv; memory ~ the static model
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 100000
+  warmup_steps: 1000
+  num_workers: 4
+  out_dir: runs/idiff_m3
+  ckpt_every: 2000
+  log_every: 100
+  device: auto
+  seed: 0

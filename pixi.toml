@@ -18,6 +18,10 @@ scikit-learn = ">=1.5.0"
 cdsapi = ">=0.7.7,<0.8"
 xarray = ">=2026.4.0,<2027"
 netcdf4 = ">=1.7.4,<2"
+# wind-field eval harness (src/eval/windeval)
+zarr = ">=3"
+cfgrib = "*"
+eccodes = "*"
 
 [feature.dev.dependencies]
 pytest = ">=8.0.0"
@@ -46,9 +50,18 @@ tqdm = ">4.66.2"
 [feature.rl.dependencies]
 gymnasium = ">=1.0.0"
 
+# InfiniteDiffusion wind generator (src/eval/windeval/generators/infinite_diffusion).
+# torch from conda-forge; infinite-tensor (lazy MultiDiffusion substrate) from PyPI.
+[feature.diffusion.dependencies]
+pytorch = ">=2.0"
+
+[feature.diffusion.pypi-dependencies]
+infinite-tensor = ">=0.3"
+
 [environments]
-default = ["dev", "viz", "gp", "rl"]
+default = ["dev", "viz", "gp", "rl", "diffusion"]
 dev = ["dev"]
 viz = ["viz"]
 gp = ["gp"]
 rl = ["rl"]
+diffusion = ["diffusion"]

@@ -1,0 +1,45 @@
+# Phase-5 CONDITIONAL SPACETIME config — the conditional 4D base diffusion model.
+# p(H×W×τ block | location, time): per-pixel lat/lon coord channels + per-frame cyclic
+# time harmonics (annual+semiannual+diurnal, see data.time_features). Decisions logged in
+# docs/conditional-base-changes.md; augmentation is forced OFF by the conditional dataset.
+#
+# DATA CONTRACT: era5_2023.zarr = all of 2023, hourly, NE-Pacific box, ML 49-66,
+# **days 8-14 of every month EXCLUDED** (the benchmark reference is days 8-14 of
+# Jan/Apr/Jul/Oct — any overlap contaminates the v2 board). Built by download_era5_train.py
+# with two MARS chunks per month (1-7, 15-end); see docs/conditional-base-changes.md.
+#
+# VRAM: spatial convs fold batch*τ; batch 16 * τ 4 = 64 spatial frames fits a gpu48 MIG
+# slice (admin asked us to stay off the two gpu96 slices, 2026-07-12). batch 8 fits gpu24.
+data:
+  data_path: src/eval/windeval/data/era5_2023.zarr
+  crop: 64
+  levels: [49, 66]
+
+# --- temporal (M2 spacetime) + conditioning (Phase 5) ---
+spacetime: true
+conditional: true
+n_frames: 4                       # τ: frames per block
+frame_stride: 1                   # native hourly spacing
+temporal_kernel: 3
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  sigma_data: 1.0
+
+train:
+  batch_size: 16                  # *τ(4) = 64 spatial frames -> gpu48 slice
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 100000
+  warmup_steps: 1000
+  num_workers: 4                  # Linux fork shares the ~14 GB arrays COW; keep --mem=32G
+  out_dir: runs/idiff_m2cond
+  ckpt_every: 2000
+  log_every: 100
+  device: cuda                    # NOT auto: the July M2 jobs silently fell back to CPU
+                                  # (0.05 it/s for 24h) when the allocation had no GPU —
+                                  # fail loudly instead (docs/conditional-base-changes.md)
+  seed: 0

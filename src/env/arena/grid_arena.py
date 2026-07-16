@@ -170,9 +170,13 @@ class GridArena(AbstractArena):
         # Split RNG keys: realized (W), observed (W_hat), actor, and carry.
         true_key, obs_key, actor_key, self._rng = jax.random.split(self._rng, 4)
 
-        # Sample both displacements at the CURRENT position (before moving).
-        true_disp = self._displacement(self.realized_field, true_key, self.process_noise_std)
-        obs_disp = self._displacement(self.observed_field, obs_key, self.obs_noise_std)
+        # Episode time = elapsed steps since reset (0 on the first step). Both fields are
+        # sampled at the same (position, t); time-invariant fields ignore it.
+        t = float(self.step_count)
+
+        # Sample both displacements at the CURRENT position and time (before moving).
+        true_disp = self._displacement(self.realized_field, true_key, self.process_noise_std, t)
+        obs_disp = self._displacement(self.observed_field, obs_key, self.obs_noise_std, t)
 
         # Store last position before update
         self.last_position = self.position
@@ -206,14 +210,14 @@ class GridArena(AbstractArena):
             self.position = GridPosition(new_i, self.position.j, None)
 
     def _displacement(
-        self, field: FlowField, key: jnp.ndarray, noise_std: float
+        self, field: FlowField, key: jnp.ndarray, noise_std: float, t: float = 0.0
     ) -> DisplacementObservation:
-        """Sample a clipped displacement from ``field`` at the current position.
+        """Sample a clipped displacement from ``field`` at the current position and time.
 
-        Reads the deterministic velocity, optionally adds white per-step jitter,
-        then clamps to [-max_displacement, max_displacement].
+        Reads the deterministic velocity at episode time ``t``, optionally adds white
+        per-step jitter, then clamps to [-max_displacement, max_displacement].
         """
-        u, v = field.velocity_at(self.position)
+        u, v = field.velocity_at(self.position, t)
         if noise_std:
             if v is not None:
                 key_u, key_v = jax.random.split(key)

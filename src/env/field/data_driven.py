@@ -199,8 +199,10 @@ class DataDrivenFlowField(FlowField):
         return self._unstandardize(self._features(positions) @ self._weights)
 
     def velocity_at(
-        self, position: GridPosition
+        self, position: GridPosition, t: float = 0.0
     ) -> Tuple[float, Optional[float]]:
+        # v1: the fitted GP is static in time; t is accepted but ignored.
+        # Temporal features (a t-frequency, mirroring SyntheticFlowField) are a TODO.
         coords: Sequence[float]
         if self.ndim == 2:
             coords = (position.i, position.j)
@@ -211,7 +213,7 @@ class DataDrivenFlowField(FlowField):
             return (float(value[0]), None)
         return (float(value[0]), float(value[1]))
 
-    def velocity_field(self) -> np.ndarray:
+    def velocity_field(self, t: float = 0.0) -> np.ndarray:
         if self._precomputed is None:
             raise RuntimeError(
                 "DataDrivenFlowField.reset() must be called before velocity_field()"

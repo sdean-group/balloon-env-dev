@@ -1,0 +1,31 @@
+# Full training config — Phase-2 (M1) run on the Cooper Union "Kahan" cluster.
+# GPU: RTX PRO 6000 Blackwell, 96 GB VRAM (CUDA 13). The binding constraint here is DATA
+# (224 timesteps over a 121x121 box, 4 seasonal weeks of 2023), not compute — so this is a
+# capable-but-not-oversized model with a large batch for throughput. Watch the Axis-1 gate;
+# if it plateaus while train loss keeps dropping, that's overfit -> download more data
+# (more seasons/years) rather than growing the model.
+data:
+  data_path: src/eval/windeval/data/era5_train.zarr   # 224 x 18 x 121 x 121, u,v
+  crop: 64
+  levels: [49, 66]
+  augment: true
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]      # 64 -> 32 -> 16 -> 8 ; attn at the two coarsest
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  sigma_data: 1.0
+
+train:
+  batch_size: 128                 # 96 GB VRAM fits this comfortably; raise to 256 for speed
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 100000
+  warmup_steps: 1000
+  num_workers: 4                  # system RAM <= 64 GB; each worker copies the ~0.5 GB arrays
+  out_dir: runs/idiff_m1
+  ckpt_every: 2000
+  log_every: 100
+  device: auto                    # picks cuda on kahan
+  seed: 0

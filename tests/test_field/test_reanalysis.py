@@ -191,3 +191,88 @@ def test_ndim_mismatch_raises(affine_npz_3d):
     bad = GridConfig.create(affine_npz_3d["n_x"], affine_npz_3d["n_y"])  # 2D vs 3D file
     with pytest.raises(ValueError):
         ReanalysisFlowField(bad, affine_npz_3d["path"])
+
+
+# --------------------------------------------------- 10. temporal mode (steps_per_slice)
+# The affine fixtures add a per-slice offset (2D: +10*slice; 3D: +1*slice). Linear
+# interpolation in BOTH space and slice-index is exact for affine data, so the temporal
+# field at episode time t (start slice t0, cadence S) has a closed-form value at
+# fractional slice s = t0 + t/S.
+
+def _temporal_2d(case, *, steps_per_slice, slice_mode="fixed"):
+    config = GridConfig.create(case["n_x"], case["n_y"])
+    return ReanalysisFlowField(
+        config, case["path"], slice_mode=slice_mode, steps_per_slice=steps_per_slice
+    )
+
+
+def test_steps_per_slice_validated(affine_npz_2d):
+    config = GridConfig.create(affine_npz_2d["n_x"], affine_npz_2d["n_y"])
+    with pytest.raises(ValueError, match="steps_per_slice"):
+        ReanalysisFlowField(config, affine_npz_2d["path"], steps_per_slice=0.0)
+
+
+def test_static_default_is_time_invariant(affine_npz_2d):
+    """Without steps_per_slice the field ignores t and reports time_varying=False."""
+    f = _field_2d(affine_npz_2d, slice_mode="fixed")
+    f.reset(KEY)
+    assert f.time_varying is False
+    p = GridPosition(2.5, 3.5, None)
+    assert f.velocity_at(p, t=0.0) == f.velocity_at(p, t=50.0)
+
+
+def test_temporal_t0_matches_frozen_start_slice(affine_npz_2d):
+    """At t=0 the temporal field equals the static frozen slice exactly."""
+    static = _field_2d(affine_npz_2d, slice_mode="fixed"); static.reset(KEY)
+    temporal = _temporal_2d(affine_npz_2d, steps_per_slice=4.0); temporal.reset(KEY)
+    assert temporal.time_varying is True
+    p = GridPosition(2.5, 3.5, None)
+    assert temporal.velocity_at(p, t=0.0)[0] == pytest.approx(static.velocity_at(p)[0])
+
+
+def test_temporal_interpolates_between_slices_2d(affine_npz_2d):
+    """velocity_at(p, t) matches the affine ground truth at fractional slice s = t/S."""
+    case = affine_npz_2d
+    S = 4.0
+    f = _temporal_2d(case, steps_per_slice=S); f.reset(KEY)  # fixed -> t0=0
+    x, y = 2.5, 3.5
+    p = GridPosition(x, y, None)
+    for t in [0.0, 2.0, 4.0, 6.0, 10.0]:
+        s = min(t / S, case["T"] - 1)              # clamp at last slice
+        expected = case["truth"](x, y, s)          # 2x+3y+1 + 10*s
+        assert f.velocity_at(p, t=t)[0] == pytest.approx(expected, abs=1e-9)
+
+
+def test_temporal_clamps_past_window_end(affine_npz_2d):
+    """Past the last slice the field clamps (no extrapolation in time)."""
+    case = affine_npz_2d
+    f = _temporal_2d(case, steps_per_slice=1.0); f.reset(KEY)  # 1 step per slice
+    p = GridPosition(2.5, 3.5, None)
+    last = case["truth"](2.5, 3.5, case["T"] - 1)
+    # Way past the end of T slices -> pinned at the final slice.
+    assert f.velocity_at(p, t=999.0)[0] == pytest.approx(last, abs=1e-9)
+
+
+def test_temporal_interpolates_between_slices_3d(affine_npz_3d):
+    case = affine_npz_3d
+    S = 2.0
+    config = GridConfig.create(case["n_x"], case["n_y"], case["n_z"])
+    f = ReanalysisFlowField(config, case["path"], slice_mode="fixed", steps_per_slice=S)
+    f.reset(KEY)
+    x, y, z = 2.5, 2.5, 2.5
+    p = GridPosition(x, y, z)
+    for t in [0.0, 1.0, 2.0, 5.0]:
+        s = min(t / S, case["T"] - 1)
+        u, v = f.velocity_at(p, t=t)
+        assert u == pytest.approx(case["u"](x, y, z, s), abs=1e-9)
+        assert v == pytest.approx(case["v"](x, y, z, s), abs=1e-9)
+
+
+def test_temporal_velocity_field_blends_slices(affine_npz_2d):
+    """velocity_field(t) returns the linear blend of bracketing slices (affine -> exact)."""
+    case = affine_npz_2d
+    S = 4.0
+    f = _temporal_2d(case, steps_per_slice=S); f.reset(KEY)
+    grid_mid = f.velocity_field(t=2.0)            # s = 0.5
+    half = 0.5 * (f._winds[0] + f._winds[1])
+    np.testing.assert_allclose(grid_mid, half, atol=1e-9)

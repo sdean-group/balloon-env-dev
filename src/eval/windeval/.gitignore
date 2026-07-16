@@ -1,0 +1,21 @@
+# Generated artifacts & data (regenerable; not source)
+data/
+*.zarr
+*.grib
+*.grib.*.idx
+*.nc
+
+# Pretrained anchors live in the external BLE checkout, not here
+*.msgpack
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
