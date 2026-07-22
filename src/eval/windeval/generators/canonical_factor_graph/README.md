@@ -58,6 +58,12 @@ atlas blending. The default geometry exercises both layers and is the research b
 The default full geometry uses a `64x64x2` core, `32x32x1` halo, and the checkpoint's
 `64x64x4` windows. Increase `--window-batch-size` only after measuring MPS memory use.
 
+For a matched-compute comparison against the existing Infinite Diffusion implementation,
+run `benchmark_against_infinite.py`. It evaluates the same physical spacetime region across
+multiple seeds, alternates method order, preserves every raw field, and reports paired
+confidence intervals. The default five-seed MPS run uses 420 model forwards per method and
+seed; it tests composition and consistency, not realism against ERA5.
+
 For a full `4x64x64` block aligned with the existing January ERA5 reference, use query
 indices `--query-t0 2 --query-y0 32 --query-x0 32`. The resulting `wind.npz` can be
 compared with the local reference using `compare_to_era5.py`; this comparison measures
