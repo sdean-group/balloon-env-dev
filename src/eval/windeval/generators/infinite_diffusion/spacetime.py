@@ -321,15 +321,33 @@ class SpaceTimeSampler:
         self.sigma_max = self.model.sigma_max
         self.step = int(ck.get("step", -1))
 
+    def sigma_schedule(self, *, device=None, dtype=torch.float64) -> torch.Tensor:
+        return edm_sigma_schedule(
+            self.num_steps,
+            self.sigma_min,
+            self.sigma_max,
+            device=device or self.device,
+            dtype=dtype,
+        )
+
     @torch.no_grad()
-    def _heun_block(self, x_unit: torch.Tensor,
-                    cond: torch.Tensor | None = None,
-                    tfeat: torch.Tensor | None = None) -> torch.Tensor:
-        sig = edm_sigma_schedule(self.num_steps, self.sigma_min, self.sigma_max,
-                                 device=x_unit.device, dtype=x_unit.dtype)
-        x = x_unit * sig[0]
+    def _heun_segment(self, x: torch.Tensor, *, start_step: int, end_step: int,
+                      unit_noise: bool = False,
+                      cond: torch.Tensor | None = None,
+                      tfeat: torch.Tensor | None = None) -> torch.Tensor:
+        """Advance a contiguous segment of the deterministic EDM trajectory."""
+        if not 0 <= start_step < end_step <= self.num_steps:
+            raise ValueError(
+                f"expected 0 <= start_step < end_step <= {self.num_steps}; "
+                f"got {start_step}, {end_step}"
+            )
+        sig = self.sigma_schedule(device=x.device, dtype=x.dtype)
+        if unit_noise:
+            if start_step != 0:
+                raise ValueError("unit_noise is only valid for a segment starting at step 0")
+            x = x * sig[0]
         B = x.shape[0]
-        for i in range(self.num_steps):
+        for i in range(start_step, end_step):
             s_cur, s_next = sig[i], sig[i + 1]
             d = (x - self.model(x, s_cur.expand(B), cond=cond, tfeat=tfeat)) / s_cur
             x_next = x + (s_next - s_cur) * d
@@ -338,6 +356,19 @@ class SpaceTimeSampler:
                 x_next = x + (s_next - s_cur) * 0.5 * (d + d2)
             x = x_next
         return x
+
+    @torch.no_grad()
+    def _heun_block(self, x_unit: torch.Tensor,
+                    cond: torch.Tensor | None = None,
+                    tfeat: torch.Tensor | None = None) -> torch.Tensor:
+        return self._heun_segment(
+            x_unit,
+            start_step=0,
+            end_step=self.num_steps,
+            unit_noise=True,
+            cond=cond,
+            tfeat=tfeat,
+        )
 
     def _condition(self, hw: tuple[int, int], lat, lon, times
                    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:

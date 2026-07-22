@@ -1,0 +1,39 @@
+# Controlled data-scaling run: same architecture and optimizer as era5_2023_m2cond.yaml.
+# Only the training corpus and validation procedure change. Paths are normally overridden
+# by train_era5_10year_dean.sbatch using DATA_ROOT so large stores stay off $HOME.
+data:
+  data_path: data/era5_2012_2021.zarr
+  stats_path: data/era5_2012_2021_norm_stats.npz
+  val_data_path: data/era5_2022.zarr
+  lazy_data: true
+  crop: 64
+  levels: [49, 66]
+
+spacetime: true
+conditional: true
+n_frames: 4
+frame_stride: 1
+temporal_kernel: 3
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  sigma_data: 1.0
+
+train:
+  batch_size: 16
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 100000
+  warmup_steps: 1000
+  num_workers: 4
+  out_dir: runs/idiff_m2cond_era5_10year
+  ckpt_every: 2000
+  log_every: 100
+  val_every: 2000
+  val_batches: 8
+  resume: true
+  device: cuda
+  seed: 0

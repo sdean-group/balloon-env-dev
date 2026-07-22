@@ -27,6 +27,14 @@ import xarray as xr
 from torch.utils.data import Dataset
 
 
+def _open_zarr(path: str | Path) -> xr.Dataset:
+    """Open a v2 store across both pre-2025 and current xarray releases."""
+    try:
+        return xr.open_zarr(path, consolidated=False, zarr_format=2)
+    except TypeError:  # xarray versions before the zarr v3 transition
+        return xr.open_zarr(path, consolidated=False)
+
+
 @dataclass
 class NormStats:
     """Per-(level) mean/std for u and v (each shape ``(n_levels,)``)."""
@@ -102,6 +110,54 @@ def compute_stats(u: np.ndarray, v: np.ndarray, levels: np.ndarray, *, eps: floa
     )
 
 
+def compute_zarr_stats(
+    zarr_path: str | Path,
+    *,
+    levels: tuple[int, int] | None = (49, 66),
+    time_chunk: int = 168,
+    eps: float = 1e-6,
+) -> NormStats:
+    """Compute training-only normalization statistics without loading the store into RAM.
+
+    The scan uses float64 accumulators and reads at most ``time_chunk`` timestamps at once.
+    This is intended for multi-year stores where the eager :func:`compute_stats` path is
+    impossible. Non-finite values are ignored independently for each variable and level.
+    """
+    if time_chunk <= 0:
+        raise ValueError("time_chunk must be positive")
+    ds = _open_zarr(zarr_path)
+    ds = _select_levels(ds, levels)
+    level_vals = np.asarray(ds["level"].values)
+    n_levels = len(level_vals)
+    sums = {name: np.zeros(n_levels, dtype=np.float64) for name in ("u", "v")}
+    sums_sq = {name: np.zeros(n_levels, dtype=np.float64) for name in ("u", "v")}
+    counts = {name: np.zeros(n_levels, dtype=np.int64) for name in ("u", "v")}
+
+    n_time = int(ds.sizes["time"])
+    for start in range(0, n_time, time_chunk):
+        stop = min(n_time, start + time_chunk)
+        for name in ("u", "v"):
+            values = np.asarray(ds[name].isel(time=slice(start, stop)).values, dtype=np.float64)
+            finite = np.isfinite(values)
+            axes = (0, 2, 3)
+            sums[name] += np.where(finite, values, 0.0).sum(axis=axes)
+            sums_sq[name] += np.where(finite, values * values, 0.0).sum(axis=axes)
+            counts[name] += finite.sum(axis=axes)
+    ds.close()
+
+    if np.any(counts["u"] == 0) or np.any(counts["v"] == 0):
+        raise ValueError(f"no finite samples for at least one level in {zarr_path}")
+
+    def moments(name: str) -> tuple[np.ndarray, np.ndarray]:
+        mean = sums[name] / counts[name]
+        variance = np.maximum(sums_sq[name] / counts[name] - mean * mean, 0.0)
+        return mean, np.sqrt(variance) + eps
+
+    mean_u, std_u = moments("u")
+    mean_v, std_v = moments("v")
+    return NormStats(mean_u, std_u, mean_v, std_v, level_vals)
+
+
 class WindCropDataset(Dataset):
     """Random fixed-size (u,v) crops from an ERA5 zarr, normalised + reflection-augmented.
 
@@ -126,7 +182,7 @@ class WindCropDataset(Dataset):
         augment: bool = True,
         seed: int = 0,
     ) -> None:
-        ds = xr.open_zarr(zarr_path, consolidated=False, zarr_format=2)
+        ds = _open_zarr(zarr_path)
         ds = _select_levels(ds, levels)
         self.u = np.ascontiguousarray(ds["u"].values, dtype=np.float32)  # (T,L,Y,X)
         self.v = np.ascontiguousarray(ds["v"].values, dtype=np.float32)
@@ -305,7 +361,7 @@ class WindPairDataset(Dataset):
         augment: bool = True,
         seed: int = 0,
     ) -> None:
-        ds = xr.open_zarr(zarr_path, consolidated=False, zarr_format=2)
+        ds = _open_zarr(zarr_path)
         ds = _select_levels(ds, levels)
         self.u = np.ascontiguousarray(ds["u"].values, dtype=np.float32)  # (T,L,Y,X)
         self.v = np.ascontiguousarray(ds["v"].values, dtype=np.float32)
@@ -374,13 +430,17 @@ class WindSpaceTimeDataset(Dataset):
         length: int = 10_000,
         augment: bool = True,
         seed: int = 0,
+        lazy: bool = False,
     ) -> None:
-        ds = xr.open_zarr(zarr_path, consolidated=False, zarr_format=2)
+        ds = _open_zarr(zarr_path)
         ds = _select_levels(ds, levels)
-        self.u = np.ascontiguousarray(ds["u"].values, dtype=np.float32)  # (T,L,Y,X)
-        self.v = np.ascontiguousarray(ds["v"].values, dtype=np.float32)
+        self.zarr_path = str(zarr_path)
+        self.lazy = bool(lazy)
+        self._lazy_ds = None
+        self.u = None if self.lazy else np.ascontiguousarray(ds["u"].values, dtype=np.float32)
+        self.v = None if self.lazy else np.ascontiguousarray(ds["v"].values, dtype=np.float32)
         self.level_vals = np.asarray(ds["level"].values)
-        self.T, self.L, self.Y, self.X = self.u.shape
+        self.T, self.L, self.Y, self.X = map(int, ds["u"].shape)
         if crop > min(self.Y, self.X):
             raise ValueError(f"crop {crop} > grid {(self.Y, self.X)}")
         self.crop = int(crop)
@@ -390,7 +450,14 @@ class WindSpaceTimeDataset(Dataset):
         self.augment = bool(augment)
         self.seed = int(seed)
         self.n_channels = 2 * self.L
+        if self.lazy and stats is None:
+            raise ValueError("lazy spacetime loading requires precomputed NormStats")
         self.stats = stats or compute_stats(self.u, self.v, self.level_vals)
+        if not np.array_equal(np.asarray(self.stats.levels), self.level_vals):
+            raise ValueError(
+                f"normalization levels {self.stats.levels} do not match data levels "
+                f"{self.level_vals}"
+            )
 
         # a block needs (n_frames-1)*frame_stride frames after t, all in one contiguous block
         span = (self.n_frames - 1) * self.frame_stride
@@ -401,9 +468,30 @@ class WindSpaceTimeDataset(Dataset):
             raise ValueError(f"no valid {self.n_frames}-frame blocks at frame_stride="
                              f"{self.frame_stride} (blocks={blocks})")
         self.blocks = blocks
+        ds.close()
 
     def __len__(self) -> int:
         return self.length
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["_lazy_ds"] = None
+        return state
+
+    def _read_block(self, ts: list[int], y0: int, x0: int) -> tuple[np.ndarray, np.ndarray]:
+        c = self.crop
+        if not self.lazy:
+            return (self.u[ts][:, :, y0:y0 + c, x0:x0 + c],
+                    self.v[ts][:, :, y0:y0 + c, x0:x0 + c])
+        if self._lazy_ds is None:
+            self._lazy_ds = _select_levels(
+                _open_zarr(self.zarr_path),
+                tuple((int(self.level_vals.min()), int(self.level_vals.max()))),
+            )
+        indexers = {"time": ts, "y": slice(y0, y0 + c), "x": slice(x0, x0 + c)}
+        u = np.asarray(self._lazy_ds["u"].isel(**indexers).values, dtype=np.float32)
+        v = np.asarray(self._lazy_ds["v"].isel(**indexers).values, dtype=np.float32)
+        return u, v
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         rng = np.random.default_rng(self.seed * 1_000_003 + idx)
@@ -412,8 +500,7 @@ class WindSpaceTimeDataset(Dataset):
         x0 = int(rng.integers(self.X - self.crop + 1))
         c = self.crop
         ts = [t0 + k * self.frame_stride for k in range(self.n_frames)]
-        u = self.u[ts][:, :, y0:y0 + c, x0:x0 + c]      # (τ,L,c,c)
-        v = self.v[ts][:, :, y0:y0 + c, x0:x0 + c]
+        u, v = self._read_block(ts, y0, x0)               # (τ,L,c,c)
         f = np.stack([u, v], axis=2).reshape(self.n_frames, self.n_channels, c, c)
         x = self.stats.normalize(torch.from_numpy(f))   # (τ,C,c,c), normalize handles 4D
         if self.augment:
@@ -444,12 +531,13 @@ class WindCondSpaceTimeDataset(WindSpaceTimeDataset):
     def __init__(self, zarr_path: str | Path, **kw) -> None:
         kw["augment"] = False
         super().__init__(zarr_path, **kw)
-        ds = xr.open_zarr(zarr_path, consolidated=False, zarr_format=2)
+        ds = _open_zarr(zarr_path)
         self.lat = np.asarray(ds["lat"].values, dtype=np.float64)
         self.lon = np.asarray(ds["lon"].values, dtype=np.float64)
         self.times = np.asarray(ds["time"].values)
         self.coord_norm = CoordNorm.from_grid(self.lat, self.lon)
         self.n_cond_channels = 2
+        ds.close()
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         rng = np.random.default_rng(self.seed * 1_000_003 + idx)
@@ -458,8 +546,7 @@ class WindCondSpaceTimeDataset(WindSpaceTimeDataset):
         x0 = int(rng.integers(self.X - self.crop + 1))
         c = self.crop
         ts = [t0 + k * self.frame_stride for k in range(self.n_frames)]
-        u = self.u[ts][:, :, y0:y0 + c, x0:x0 + c]      # (τ,L,c,c)
-        v = self.v[ts][:, :, y0:y0 + c, x0:x0 + c]
+        u, v = self._read_block(ts, y0, x0)               # (τ,L,c,c)
         f = np.stack([u, v], axis=2).reshape(self.n_frames, self.n_channels, c, c)
         x = self.stats.normalize(torch.from_numpy(f))   # (τ,C,c,c)
         coords = torch.from_numpy(

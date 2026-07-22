@@ -47,6 +47,9 @@ except ImportError:  # pragma: no cover - standalone script path
 @dataclass
 class TrainConfig:
     data_path: str = "src/eval/windeval/data/era5_real.zarr"
+    stats_path: str | None = None
+    lazy_data: bool = False
+    val_data_path: str | None = None
     crop: int = 64
     levels: tuple[int, int] | None = (49, 66)
     augment: bool = True
@@ -88,6 +91,8 @@ class TrainConfig:
     out_dir: str = "runs/idiff_m1"
     ckpt_every: int = 5_000
     log_every: int = 100
+    val_every: int = 2_000
+    val_batches: int = 8
     resume: bool = True            # auto-resume from out_dir/latest.pt if present
     device: str = "auto"           # auto | cpu | mps | cuda
     seed: int = 0
@@ -165,7 +170,7 @@ class EMA:
 
 # --------------------------------------------------------------------------- checkpoint
 def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: TrainConfig,
-              coord_norm: dict | None = None) -> None:
+              coord_norm: dict | None = None, best_val_loss: float | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "model": model.state_dict(),
@@ -175,6 +180,7 @@ def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: Train
         "stats": {"mean_u": stats.mean_u, "std_u": stats.std_u,
                   "mean_v": stats.mean_v, "std_v": stats.std_v, "levels": stats.levels},
         "cfg": cfg.__dict__,
+        "best_val_loss": best_val_loss,
     }
     if coord_norm is not None:
         payload["coord_norm"] = coord_norm
@@ -210,6 +216,37 @@ def build_model(cfg: TrainConfig, n_channels: int):
     )
 
 
+def _batch_loss(model, batch, cfg: TrainConfig, device: torch.device) -> torch.Tensor:
+    if cfg.conditional:
+        x0, cond, tfeat = batch
+        return model.loss(x0.to(device, non_blocking=True),
+                          cond=cond.to(device, non_blocking=True),
+                          tfeat=tfeat.to(device, non_blocking=True))
+    if cfg.paired:
+        cond, x0 = batch
+        return model.loss(x0.to(device, non_blocking=True),
+                          cond=cond.to(device, non_blocking=True))
+    x0 = batch.to(device, non_blocking=True)
+    return model.loss(x0)
+
+
+@torch.no_grad()
+def validation_loss(model, loader: DataLoader, cfg: TrainConfig,
+                    device: torch.device) -> float:
+    """Fixed-seed native-window denoising loss for checkpoint selection."""
+    was_training = model.training
+    model.eval()
+    cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] \
+        if device.type == "cuda" else []
+    losses = []
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(cfg.seed + 10_000_019)
+        for batch in loader:
+            losses.append(float(_batch_loss(model, batch, cfg, device)))
+    model.train(was_training)
+    return sum(losses) / len(losses)
+
+
 # --------------------------------------------------------------------------- train
 def train(cfg: TrainConfig) -> Path:
     # line-buffer stdout so step logs stream live to the SLURM .out file (which is block-
@@ -231,17 +268,22 @@ def train(cfg: TrainConfig) -> Path:
         raise ValueError("conditional requires spacetime=True (the Phase-5 M2 route)")
     length = cfg.batch_size * cfg.n_steps
     coord_norm = None
+    stats = NormStats.load(cfg.stats_path) if cfg.stats_path else None
+    if cfg.lazy_data and stats is None:
+        raise ValueError("lazy_data=True requires stats_path computed from training data")
     if cfg.conditional:
         dataset = WindCondSpaceTimeDataset(cfg.data_path, crop=cfg.crop, levels=cfg.levels,
                                            n_frames=cfg.n_frames, frame_stride=cfg.frame_stride,
-                                           length=length, seed=cfg.seed)
+                                           stats=stats, length=length, seed=cfg.seed,
+                                           lazy=cfg.lazy_data)
         coord_norm = dataset.coord_norm.to_dict()
         mode_note = (f"  | CONDITIONAL SPACETIME (τ={cfg.n_frames}, stride {cfg.frame_stride}, "
                      f"{len(dataset.block_starts)} block starts, coord_norm={coord_norm})")
     elif cfg.spacetime:
         dataset = WindSpaceTimeDataset(cfg.data_path, crop=cfg.crop, levels=cfg.levels,
                                        n_frames=cfg.n_frames, frame_stride=cfg.frame_stride,
-                                       augment=cfg.augment, length=length, seed=cfg.seed)
+                                       stats=stats, augment=cfg.augment, length=length,
+                                       seed=cfg.seed, lazy=cfg.lazy_data)
         mode_note = (f"  | SPACETIME (τ={cfg.n_frames}, stride {cfg.frame_stride}, "
                      f"{len(dataset.block_starts)} block starts)")
     elif cfg.paired:
@@ -261,13 +303,31 @@ def train(cfg: TrainConfig) -> Path:
 
     loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False,
                         num_workers=cfg.num_workers, drop_last=True,
-                        pin_memory=(device.type == "cuda"))
+                        pin_memory=(device.type == "cuda"),
+                        persistent_workers=(cfg.num_workers > 0))
+
+    val_loader = None
+    if cfg.val_data_path:
+        if not cfg.spacetime:
+            raise ValueError("validation data is currently supported for spacetime training")
+        val_cls = WindCondSpaceTimeDataset if cfg.conditional else WindSpaceTimeDataset
+        val_dataset = val_cls(
+            cfg.val_data_path, crop=cfg.crop, levels=cfg.levels,
+            n_frames=cfg.n_frames, frame_stride=cfg.frame_stride, stats=stats,
+            length=cfg.batch_size * cfg.val_batches, seed=cfg.seed + 1, lazy=cfg.lazy_data,
+            **({} if cfg.conditional else {"augment": False}),
+        )
+        val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False,
+                                num_workers=0, drop_last=True,
+                                pin_memory=(device.type == "cuda"))
+        print(f"[train] validation: {cfg.val_data_path}  ({cfg.val_batches} fixed batches)")
 
     model = build_model(cfg, dataset.n_channels).to(device)
     ema = EMA(model, cfg.ema_decay)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
     start_step = 0
+    best_val_loss = float("inf")
     latest = out / "latest.pt"
     if cfg.resume and latest.exists():
         ck = torch.load(latest, map_location=device, weights_only=False)
@@ -275,6 +335,8 @@ def train(cfg: TrainConfig) -> Path:
         ema.shadow.load_state_dict(ck["ema"])
         opt.load_state_dict(ck["opt"])
         start_step = int(ck["step"])
+        if ck.get("best_val_loss") is not None:
+            best_val_loss = float(ck["best_val_loss"])
         print(f"[train] resumed from {latest} at step {start_step}")
 
     model.train()
@@ -284,29 +346,12 @@ def train(cfg: TrainConfig) -> Path:
     for batch in loader:
         if step >= cfg.n_steps:
             break
-        tfeat = None
-        if cfg.conditional:
-            x0, cond, tfeat = batch                           # (block, coords, time features)
-            x0 = x0.to(device, non_blocking=True)
-            cond = cond.to(device, non_blocking=True)
-            tfeat = tfeat.to(device, non_blocking=True)
-        elif cfg.paired:
-            cond, x0 = batch                                  # (frame_t, frame_{t+stride})
-            cond = cond.to(device, non_blocking=True)
-            x0 = x0.to(device, non_blocking=True)
-        else:                                                 # static (4D) or spacetime (5D block)
-            cond, x0 = None, batch.to(device, non_blocking=True)
         lr = cfg.lr * min(1.0, (step + 1) / max(1, cfg.warmup_steps))
         for g in opt.param_groups:
             g["lr"] = lr
 
         opt.zero_grad(set_to_none=True)
-        if cfg.conditional:
-            loss = model.loss(x0, cond=cond, tfeat=tfeat)
-        elif cfg.spacetime:
-            loss = model.loss(x0)
-        else:
-            loss = model.loss(x0, cond=cond)
+        loss = _batch_loss(model, batch, cfg, device)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
@@ -320,15 +365,25 @@ def train(cfg: TrainConfig) -> Path:
                   f"  lr {lr:.2e}  {rate:.1f} it/s")
             running = 0.0
             t0 = time.time()
+        if val_loader is not None and step % cfg.val_every == 0:
+            val_loss = validation_loss(ema.shadow, val_loader, cfg, device)
+            print(f"[train] validation @ step {step}: EMA loss {val_loss:.6f}")
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                save_ckpt(out / "best.pt", model=model, ema=ema, opt=opt, step=step,
+                          stats=stats, cfg=cfg, coord_norm=coord_norm,
+                          best_val_loss=best_val_loss)
+                print(f"[train] new best validation checkpoint @ step {step}")
         if step % cfg.ckpt_every == 0:
             save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats,
-                      cfg=cfg, coord_norm=coord_norm)
+                      cfg=cfg, coord_norm=coord_norm, best_val_loss=best_val_loss)
             save_ckpt(out / f"step_{step}.pt", model=model, ema=ema, opt=opt,
-                      step=step, stats=stats, cfg=cfg, coord_norm=coord_norm)
+                      step=step, stats=stats, cfg=cfg, coord_norm=coord_norm,
+                      best_val_loss=best_val_loss)
             print(f"[train] checkpoint @ step {step}")
 
     save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats,
-              cfg=cfg, coord_norm=coord_norm)
+              cfg=cfg, coord_norm=coord_norm, best_val_loss=best_val_loss)
     print(f"[train] done @ step {step} -> {latest}")
     return latest
 
