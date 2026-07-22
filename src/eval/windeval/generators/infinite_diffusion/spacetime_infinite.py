@@ -41,12 +41,13 @@ def _coordinate_noise(
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    """Coordinate-keyed Gaussian noise shared exactly by overlapping windows."""
-    c = torch.arange(channels, dtype=torch.int64, device=device)[:, None, None, None]
-    t = torch.arange(t0, t0 + tau, dtype=torch.int64, device=device)[None, :, None, None]
-    y = torch.arange(y0, y0 + height, dtype=torch.int64, device=device)[None, None, :, None]
-    x = torch.arange(x0, x0 + width, dtype=torch.int64, device=device)[None, None, None, :]
-    h = torch.full((1, 1, 1, 1), int(seed), dtype=torch.int64, device=device)
+    """Coordinate-keyed Gaussian noise, generated on CPU for MPS compatibility."""
+    cpu = torch.device("cpu")
+    c = torch.arange(channels, dtype=torch.int64, device=cpu)[:, None, None, None]
+    t = torch.arange(t0, t0 + tau, dtype=torch.int64, device=cpu)[None, :, None, None]
+    y = torch.arange(y0, y0 + height, dtype=torch.int64, device=cpu)[None, None, :, None]
+    x = torch.arange(x0, x0 + width, dtype=torch.int64, device=cpu)[None, None, None, :]
+    h = torch.full((1, 1, 1, 1), int(seed), dtype=torch.int64, device=cpu)
     h = h ^ (x * 6364136223846793005)
     h = h ^ (y * 1442695040888963407)
     h = h ^ (t * 22695477)
@@ -56,7 +57,8 @@ def _coordinate_noise(
     h = h ^ (h >> 29)
     uniform = (h & ((1 << 53) - 1)).to(torch.float64) / float(1 << 53)
     uniform = uniform.clamp(1e-12, 1.0 - 1e-12)
-    return (2.0**0.5 * torch.erfinv(2.0 * uniform - 1.0)).to(dtype)
+    noise = 2.0**0.5 * torch.erfinv(2.0 * uniform - 1.0)
+    return noise.to(device=device, dtype=dtype)
 
 
 @dataclass(frozen=True)

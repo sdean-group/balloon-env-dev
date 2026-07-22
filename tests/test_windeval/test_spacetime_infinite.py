@@ -13,6 +13,7 @@ sys.path.insert(0, str(MODULE_DIR))
 from spacetime_infinite import (  # noqa: E402
     InfiniteSpaceTimeDiffusion,
     SpaceTimeGrid,
+    _coordinate_noise,
 )
 from spacetime import SpaceTimeSampler  # noqa: E402
 
@@ -60,6 +61,15 @@ def _field(seed: int = 11, outer_depth: int = 1) -> InfiniteSpaceTimeDiffusion:
         split_step=2,
         cache_bytes=8 * 1024 * 1024,
     )
+
+
+def test_coordinate_noise_is_shared_in_overlap() -> None:
+    kwargs = {"t0": -1, "y0": 3, "seed": 19, "device": torch.device("cpu"),
+              "dtype": torch.float32}
+    left = _coordinate_noise(2, 2, 4, 4, x0=5, **kwargs)
+    right = _coordinate_noise(2, 2, 4, 4, x0=7, **kwargs)
+
+    assert torch.equal(left[..., 2:], right[..., :2])
 
 
 def test_spacetime_shape_and_cached_repeat() -> None:
