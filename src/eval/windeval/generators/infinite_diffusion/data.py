@@ -23,12 +23,20 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import xarray as xr
 from torch.utils.data import Dataset
+
+try:
+    import xarray as xr
+except ModuleNotFoundError:  # Sampling from a checkpoint does not require ERA5 I/O.
+    xr = None
 
 
 def _open_zarr(path: str | Path) -> xr.Dataset:
     """Open a v2 store across both pre-2025 and current xarray releases."""
+    if xr is None:
+        raise ModuleNotFoundError(
+            "xarray is required to read ERA5 datasets; install xarray and zarr"
+        )
     try:
         return xr.open_zarr(path, consolidated=False, zarr_format=2)
     except TypeError:  # xarray versions before the zarr v3 transition
