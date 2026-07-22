@@ -22,6 +22,7 @@ from .denoiser import WindowDenoiser, ToyDivFreeDenoiser
 from .sampler import InfiniteDiffusion
 from .generator import InfiniteDiffusionGenerator
 from .trained import TrainedWindowDenoiser, build_sampler
+from .spacetime_infinite import InfiniteSpaceTimeDiffusion, SpaceTimeGrid
 
 __all__ = [
     "WindowDenoiser",
@@ -30,6 +31,8 @@ __all__ = [
     "InfiniteDiffusionGenerator",
     "TrainedWindowDenoiser",
     "build_sampler",
+    "InfiniteSpaceTimeDiffusion",
+    "SpaceTimeGrid",
 ]
 # viz is intentionally NOT imported here (pulls matplotlib); import it explicitly:
 #   from src.eval.windeval.generators.infinite_diffusion import viz
