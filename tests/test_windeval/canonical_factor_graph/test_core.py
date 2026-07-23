@@ -110,3 +110,34 @@ def test_model_evaluation_count_matches_fixed_factor_graph() -> None:
     heun_evaluations = 2 * field.sampler.num_steps - 1
     assert field.model_window_evaluations == len(keys) * factors_per_chart * heun_evaluations
     assert np.isfinite(field.materialize(0, 2, 1, 3, 1, 3).numpy()).all()
+
+
+def test_heldout_condition_geometry_has_expected_bounded_work() -> None:
+    class ConditionSampler(_ToySampler):
+        tau = 4
+
+        def sigma_schedule(self, *, device=None, dtype=torch.float64):
+            return torch.tensor([1.0, 0.5, 0.0], device=device or self.device, dtype=dtype)
+
+        def _condition(self, hw, lat, lon, times):  # noqa: ARG002
+            h, w = hw
+            return torch.zeros(1, 2, h, w), torch.zeros(1, self.tau, 6)
+
+    field = CanonicalFactorGraphField(
+        ConditionSampler(),
+        config=ChartConfig(
+            core_time=2,
+            core_size=80,
+            halo_time=1,
+            halo_size=8,
+            window_size=64,
+            window_stride=32,
+            time_stride=2,
+        ),
+    )
+    keys = field.chart_keys_for_query(1, 5, 32, 48, 32, 48)
+    _ = field.materialize(1, 5, 32, 48, 32, 48)
+
+    assert keys == [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+    assert len(field._factor_offsets) == 4
+    assert field.model_window_evaluations == 3 * 4 * (2 * field.sampler.num_steps - 1)

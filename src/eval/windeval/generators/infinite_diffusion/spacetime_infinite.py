@@ -108,6 +108,7 @@ class InfiniteSpaceTimeDiffusion:
         seed: int = 0,
         outer_depth: int = 1,
         split_step: int | None = None,
+        split_steps: tuple[int, ...] | list[int] | None = None,
         weight_eps: float = 0.01,
         cache_bytes: int | None = 512 * 1024 * 1024,
         dtype: torch.dtype = torch.float32,
@@ -124,9 +125,9 @@ class InfiniteSpaceTimeDiffusion:
         self.time_stride = int(time_stride if time_stride is not None else max(1, self.tau // 2))
         self.seed = int(seed)
         self.outer_depth = int(outer_depth)
-        self.split_step = (
-            int(split_step) if split_step is not None else int(sampler.num_steps) // 2
-        )
+        self.split_steps = self._resolve_split_steps(split_step, split_steps)
+        # Backward-compatible attribute for existing T=2 reports and callers.
+        self.split_step = self.split_steps[0] if len(self.split_steps) == 1 else None
         self.grid = grid or SpaceTimeGrid()
         self.model_window_calls = 0
         self.model_forward_evaluations = 0
@@ -138,17 +139,49 @@ class InfiniteSpaceTimeDiffusion:
             raise ValueError("stride must be in (0, window]")
         if not 0 < self.time_stride <= self.tau:
             raise ValueError("time_stride must be in (0, tau]")
-        if self.outer_depth not in (1, 2):
-            raise ValueError("outer_depth must be 1 or 2")
-        if self.outer_depth == 2 and not 0 < self.split_step < sampler.num_steps:
-            raise ValueError("T=2 requires split_step in (0, num_steps)")
-
         self.store = MemoryTileStore(cache_size_bytes=cache_bytes)
         wt = _linear_weight_1d(self.tau, weight_eps, device=self.device, dtype=dtype)
         wy = _linear_weight_1d(self.window, weight_eps, device=self.device, dtype=dtype)
         wx = _linear_weight_1d(self.window, weight_eps, device=self.device, dtype=dtype)
         self._weight = wt[:, None, None] * wy[None, :, None] * wx[None, None, :]
         self._build()
+
+    def _resolve_split_steps(
+        self,
+        split_step: int | None,
+        split_steps: tuple[int, ...] | list[int] | None,
+    ) -> tuple[int, ...]:
+        if self.outer_depth < 1:
+            raise ValueError("outer_depth must be positive")
+        if self.outer_depth > self.sampler.num_steps:
+            raise ValueError("outer_depth cannot exceed the number of denoising steps")
+        if split_step is not None and split_steps is not None:
+            raise ValueError("provide split_step or split_steps, not both")
+        if self.outer_depth == 1:
+            if split_steps:
+                raise ValueError("T=1 does not accept split_steps")
+            return ()
+        if split_steps is not None:
+            resolved = tuple(int(step) for step in split_steps)
+        elif split_step is not None:
+            if self.outer_depth != 2:
+                raise ValueError("split_step is the T=2 compatibility option; use split_steps")
+            resolved = (int(split_step),)
+        else:
+            resolved = tuple(
+                round(index * self.sampler.num_steps / self.outer_depth)
+                for index in range(1, self.outer_depth)
+            )
+        if len(resolved) != self.outer_depth - 1:
+            raise ValueError(
+                f"T={self.outer_depth} requires {self.outer_depth - 1} split steps; "
+                f"received {len(resolved)}"
+            )
+        if any(left >= right for left, right in zip((0, *resolved), (*resolved, self.sampler.num_steps))):
+            raise ValueError(
+                f"split_steps must be strictly increasing inside (0, {self.sampler.num_steps})"
+            )
+        return resolved
 
     def _overlap_window(self) -> TensorWindow:
         return TensorWindow(
@@ -232,7 +265,9 @@ class InfiniteSpaceTimeDiffusion:
             )
             return torch.cat([weight * prediction, weight], dim=0)
 
-        initial_end = self.sampler.num_steps if self.outer_depth == 1 else self.split_step
+        boundaries = (0, *self.split_steps, self.sampler.num_steps)
+        schedule_id = "-".join(str(step) for step in self.split_steps) or "full"
+        initial_end = boundaries[1]
         initial = InfiniteTensor(
             shape=shape,
             f=lambda ctx: initial_f(ctx, initial_end),
@@ -240,40 +275,56 @@ class InfiniteSpaceTimeDiffusion:
             dtype=self.dtype,
             device=self.device,
             tile_store=self.store,
-            tensor_id=f"wind-idiff4d-{self.seed}-T{self.outer_depth}-phase0",
+            tensor_id=(
+                f"wind-idiff4d-{self.seed}-T{self.outer_depth}-"
+                f"splits{schedule_id}-phase0"
+            ),
         )
         self.phases = [initial]
-        if self.outer_depth == 1:
-            self.packed = initial
-            return
-
         overlap_window = self._overlap_window()
-
-        def continuation_f(ctx, previous):
-            intermediate = previous[:C] / previous[C:].clamp_min(1e-12)
-            prediction = self._sample_segment(
-                intermediate,
-                ctx,
-                start_step=self.split_step,
-                end_step=self.sampler.num_steps,
-                unit_noise=False,
-                phase="continuation",
+        for phase_index in range(1, self.outer_depth):
+            previous_phase = self.phases[-1]
+            start_step = boundaries[phase_index]
+            end_step = boundaries[phase_index + 1]
+            phase_name = (
+                "continuation" if self.outer_depth == 2
+                else f"continuation_{phase_index}"
             )
-            return torch.cat([weight * prediction, weight], dim=0)
 
-        final = InfiniteTensor(
-            shape=shape,
-            f=continuation_f,
-            output_window=overlap_window,
-            args=(initial,),
-            args_windows=(overlap_window,),
-            dtype=self.dtype,
-            device=self.device,
-            tile_store=self.store,
-            tensor_id=f"wind-idiff4d-{self.seed}-T2-phase1",
-        )
-        self.phases.append(final)
-        self.packed = final
+            def continuation_f(
+                ctx,
+                previous,
+                segment_start=start_step,
+                segment_end=end_step,
+                segment_name=phase_name,
+            ):
+                intermediate = previous[:C] / previous[C:].clamp_min(1e-12)
+                prediction = self._sample_segment(
+                    intermediate,
+                    ctx,
+                    start_step=segment_start,
+                    end_step=segment_end,
+                    unit_noise=False,
+                    phase=segment_name,
+                )
+                return torch.cat([weight * prediction, weight], dim=0)
+
+            phase = InfiniteTensor(
+                shape=shape,
+                f=continuation_f,
+                output_window=overlap_window,
+                args=(previous_phase,),
+                args_windows=(overlap_window,),
+                dtype=self.dtype,
+                device=self.device,
+                tile_store=self.store,
+                tensor_id=(
+                    f"wind-idiff4d-{self.seed}-T{self.outer_depth}-"
+                    f"splits{schedule_id}-phase{phase_index}"
+                ),
+            )
+            self.phases.append(phase)
+        self.packed = self.phases[-1]
 
     def materialize(
         self,

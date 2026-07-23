@@ -49,7 +49,11 @@ class _ToyDenoiser:
         scale = 1.0 / (1.0 + sigma.reshape(-1, 1, 1, 1, 1))
         return scale * x
 
-def _field(seed: int = 11, outer_depth: int = 1) -> InfiniteSpaceTimeDiffusion:
+def _field(
+    seed: int = 11,
+    outer_depth: int = 1,
+    split_steps: tuple[int, ...] | None = None,
+) -> InfiniteSpaceTimeDiffusion:
     return InfiniteSpaceTimeDiffusion(
         _IdentitySampler(),
         grid=SpaceTimeGrid(),
@@ -58,7 +62,8 @@ def _field(seed: int = 11, outer_depth: int = 1) -> InfiniteSpaceTimeDiffusion:
         time_stride=1,
         seed=seed,
         outer_depth=outer_depth,
-        split_step=2,
+        split_step=2 if outer_depth == 2 and split_steps is None else None,
+        split_steps=split_steps,
         cache_bytes=8 * 1024 * 1024,
     )
 
@@ -120,6 +125,39 @@ def test_t2_spacetime_shape_cache_and_query_order() -> None:
     _ = reordered.materialize(20, 22, -8, -4, 10, 14)
     larger = reordered.materialize(0, 4, 0, 8, 0, 8)
     assert torch.allclose(first, larger[:, 1:3, 2:6, 2:6], atol=1e-6)
+
+
+def test_t3_spacetime_shape_cache_query_order_and_phase_accounting() -> None:
+    field = _field(outer_depth=3, split_steps=(1, 3))
+    first = field.materialize(1, 3, 2, 6, 2, 6)
+    calls = field.model_window_calls
+    second = field.materialize(1, 3, 2, 6, 2, 6)
+
+    assert first.shape == (2, 2, 4, 4)
+    assert torch.equal(first, second)
+    assert field.model_window_calls == calls
+    assert field.split_steps == (1, 3)
+    assert len(field.phases) == 3
+    assert all(field.phase_window_calls[f"continuation_{index}"] > 0 for index in (1, 2))
+    assert sum(field.phase_forward_evaluations.values()) == field.model_forward_evaluations
+
+    reordered = _field(outer_depth=3, split_steps=(1, 3))
+    _ = reordered.materialize(20, 22, -8, -4, 10, 14)
+    larger = reordered.materialize(0, 4, 0, 8, 0, 8)
+    assert torch.allclose(first, larger[:, 1:3, 2:6, 2:6], atol=1e-6)
+
+
+def test_split_schedule_validation_and_even_defaults() -> None:
+    assert _field(outer_depth=3).split_steps == (1, 3)
+    assert _field(outer_depth=4).split_steps == (1, 2, 3)
+
+    for split_steps in ((2,), (2, 2), (0, 3), (1, 4)):
+        try:
+            _field(outer_depth=3, split_steps=split_steps)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid split schedule accepted: {split_steps}")
 
 
 def test_segmented_heun_matches_unsplit_trajectory_without_blending() -> None:

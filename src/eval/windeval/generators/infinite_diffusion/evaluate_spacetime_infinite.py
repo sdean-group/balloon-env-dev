@@ -105,8 +105,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs/m2cond_infinite")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--num-steps", type=int, default=4)
-    parser.add_argument("--outer-depth", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--outer-depth", type=int, default=1)
     parser.add_argument("--split-step", type=int)
+    parser.add_argument("--split-steps", type=int, nargs="+")
     parser.add_argument("--window", type=int, default=32)
     parser.add_argument("--stride", type=int, default=16)
     parser.add_argument("--time-stride", type=int, default=2)
@@ -121,6 +122,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.split_step is not None and args.split_steps is not None:
+        raise ValueError("provide --split-step or --split-steps, not both")
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     sampler = SpaceTimeSampler(
@@ -143,6 +146,7 @@ def main() -> None:
         seed=args.seed,
         outer_depth=args.outer_depth,
         split_step=args.split_step,
+        split_steps=args.split_steps,
     )
 
     t0 = args.time_stride
@@ -185,6 +189,11 @@ def main() -> None:
                 if field.outer_depth == 2
                 else None
             ),
+            "split_steps": list(field.split_steps),
+            "split_sigmas": [
+                float(sampler.sigma_schedule(device="cpu")[step])
+                for step in field.split_steps
+            ],
             "window": args.window,
             "stride": args.stride,
             "time_window": sampler.tau,
