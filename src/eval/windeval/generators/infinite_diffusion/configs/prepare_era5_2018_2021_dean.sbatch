@@ -1,14 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=era5-12yr-data
+#SBATCH --job-name=era5-4yr-data
 #SBATCH --partition=gpu
+#SBATCH --nodes=1
 #SBATCH --nodelist=dean-compute-[01-02]
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=24:00:00
 #SBATCH --signal=B:USR1@1800
 #SBATCH --requeue
-#SBATCH --output=era5-12yr-data-%j.out
-#SBATCH --error=era5-12yr-data-%j.err
+#SBATCH --output=era5-4yr-data-%j.out
+#SBATCH --error=era5-4yr-data-%j.err
 #SBATCH --get-user-env
 
 set -euo pipefail
@@ -16,9 +17,9 @@ set -euo pipefail
 REPO="${REPO:-$SLURM_SUBMIT_DIR}"
 PY="${PYTHON:-$HOME/envs/idiff-eval-titan/bin/python}"
 DATA_ROOT="${DATA_ROOT:-/share/dean/$USER/balloon-research/era5}"
-STORE="$DATA_ROOT/era5_2010_2021.zarr"
-STATS="$DATA_ROOT/era5_2010_2021_norm_stats.npz"
-MANIFEST="$DATA_ROOT/era5_2010_2021.complete.json"
+STORE="$DATA_ROOT/era5_2018_2021.zarr"
+STATS="$DATA_ROOT/era5_2018_2021_norm_stats.npz"
+MANIFEST="$DATA_ROOT/era5_2018_2021.complete.json"
 
 cd "$REPO"
 mkdir -p "$DATA_ROOT"
@@ -43,7 +44,7 @@ run_prepare() {
   "$PY" src/eval/windeval/generators/infinite_diffusion/prepare_era5_multiyear.py \
     --years $years \
     --out "$STORE" \
-    --work-dir "$DATA_ROOT/grib_tmp/era5_2010_2021" \
+    --work-dir "$DATA_ROOT/grib_tmp/era5_2018_2021" \
     "$@" &
   child_pid=$!
   while true; do
@@ -64,11 +65,11 @@ run_prepare() {
   return "$status"
 }
 
-run_prepare "$(seq -s ' ' 2010 2021)" --stats-out "$STATS"
+run_prepare "$(seq -s ' ' 2018 2021)" --stats-out "$STATS"
 
 "$PY" src/eval/windeval/generators/infinite_diffusion/validate_era5_multiyear.py \
   --path "$STORE" \
-  --first-year 2010 \
+  --first-year 2018 \
   --last-year 2021 \
   --stats "$STATS" \
   --manifest "$MANIFEST"

@@ -1,4 +1,4 @@
-# 2010-2021 Conditional Base-Model Training
+# 2018-2021 Conditional Base-Model Training
 
 ## Experimental contract
 
@@ -22,7 +22,7 @@ does not update the model.
 
 | Role | Years | Treatment |
 |---|---|---|
-| Training | 2010-2021 | All 12 complete pre-validation years, hourly |
+| Training | 2018-2021 | Four recent complete years, hourly |
 | Validation | 2022 | Fixed validation batches every 2,000 steps |
 | Benchmark | 2023 | Never downloaded into either training store |
 
@@ -30,7 +30,7 @@ The source region and variables match the original model: 25-55 N, 225-255 E,
 ERA5 model levels 49-66, hourly `u` and `v`. "Full ERA5" here means all hourly data
 for this fixed regional/model-level contract, not the global ERA5 archive.
 
-The uncompressed training arrays are approximately 215 GB. The preparation job uses
+The uncompressed training arrays are approximately 74 GB. The preparation job uses
 lossless Zstandard compression, so the corpus fits comfortably within the reported
 1.2 TB available on `/share/dean`.
 
@@ -51,7 +51,7 @@ test -f "$HOME/.cdsapirc" && echo "CDS credentials found"
 Run both CPU-only jobs. They use Dean compute nodes but request no GPU. Downloads are
 monthly and resumable: requeued jobs skip every month already appended. The normalization
 scan is also resumable by time chunk. The training-data job computes normalization
-statistics only after all 12 years are present. Each job
+statistics only after all four years are present. Each job
 then validates the exact hourly timeline, grid, levels, and statistics before writing
 its `.complete.json` gate.
 
@@ -61,7 +61,7 @@ cd "$HOME/balloon-env-dev-code"
 REPO="$PWD" \
 PYTHON="$HOME/envs/idiff-eval-titan/bin/python" \
 DATA_ROOT="/share/dean/$USER/balloon-research/era5" \
-sbatch src/eval/windeval/generators/infinite_diffusion/configs/prepare_era5_2010_2021_dean.sbatch
+sbatch src/eval/windeval/generators/infinite_diffusion/configs/prepare_era5_2018_2021_dean.sbatch
 
 REPO="$PWD" \
 PYTHON="$HOME/envs/idiff-eval-titan/bin/python" \
@@ -69,7 +69,7 @@ DATA_ROOT="/share/dean/$USER/balloon-research/era5" \
 sbatch src/eval/windeval/generators/infinite_diffusion/configs/prepare_era5_2022_validation_dean.sbatch
 ```
 
-The 2010-2021 job checkpoints after its current month and requeues itself before each
+The 2018-2021 job checkpoints after its current month and requeues itself before each
 24-hour limit. If the smaller 2022 validation job reaches its limit, submit that command
 again. Do not delete either Zarr store or the normalization progress file.
 
@@ -77,9 +77,9 @@ Verify both gates before training:
 
 ```bash
 DATA_ROOT="/share/dean/$USER/balloon-research/era5"
-cat "$DATA_ROOT/era5_2010_2021.complete.json"
+cat "$DATA_ROOT/era5_2018_2021.complete.json"
 cat "$DATA_ROOT/era5_2022.complete.json"
-du -sh "$DATA_ROOT/era5_2010_2021.zarr" "$DATA_ROOT/era5_2022.zarr"
+du -sh "$DATA_ROOT/era5_2018_2021.zarr" "$DATA_ROOT/era5_2022.zarr"
 ```
 
 ## Train
@@ -90,8 +90,8 @@ cd "$HOME/balloon-env-dev-code"
 REPO="$PWD" \
 PYTHON="$HOME/envs/idiff-eval-titan/bin/python" \
 DATA_ROOT="/share/dean/$USER/balloon-research/era5" \
-OUT_DIR="/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2010_2021" \
-sbatch src/eval/windeval/generators/infinite_diffusion/configs/train_era5_2010_2021_dean.sbatch
+OUT_DIR="/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2018_2021" \
+sbatch src/eval/windeval/generators/infinite_diffusion/configs/train_era5_2018_2021_dean.sbatch
 ```
 
 The training job requests one RTX 6000 Ada GPU on `dean-compute-02`. Five minutes
@@ -103,14 +103,14 @@ Monitor:
 
 ```bash
 squeue --me
-tail -F idiff-12yr-JOB_ID.out
+tail -F idiff-4yr-JOB_ID.out
 ```
 
 The final and validation-selected checkpoints are:
 
 ```text
-/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2010_2021/latest.pt
-/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2010_2021/best.pt
+/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2018_2021/latest.pt
+/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2018_2021/best.pt
 ```
 
 Use `latest.pt` for the strict step-100,000 comparison with the original checkpoint.

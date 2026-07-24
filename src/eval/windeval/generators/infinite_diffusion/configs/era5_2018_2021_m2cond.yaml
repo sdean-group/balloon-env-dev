@@ -1,10 +1,10 @@
-# 2010-2021 data-scaling control for idiff_m2cond_latest.pt.
+# Four-year data-scaling control for idiff_m2cond_latest.pt.
 # Architecture, objective, conditioning, optimizer, batch size, and update count are
 # identical to era5_2023_m2cond.yaml. Only the training corpus, training-derived
 # normalization statistics, validation, lazy I/O, and output location differ.
 data:
-  data_path: data/era5_2010_2021.zarr
-  stats_path: data/era5_2010_2021_norm_stats.npz
+  data_path: data/era5_2018_2021.zarr
+  stats_path: data/era5_2018_2021_norm_stats.npz
   val_data_path: data/era5_2022.zarr
   lazy_data: true
   crop: 64
@@ -30,7 +30,7 @@ train:
   n_steps: 100000
   warmup_steps: 1000
   num_workers: 4
-  out_dir: runs/idiff_m2cond_era5_2010_2021
+  out_dir: runs/idiff_m2cond_era5_2018_2021
   ckpt_every: 2000
   log_every: 100
   val_every: 2000

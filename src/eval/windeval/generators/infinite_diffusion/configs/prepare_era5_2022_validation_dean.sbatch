@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=era5-2022-val
 #SBATCH --partition=gpu
+#SBATCH --nodes=1
 #SBATCH --nodelist=dean-compute-[01-02]
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
