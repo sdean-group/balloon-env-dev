@@ -5,7 +5,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
+import torch
 import xarray as xr
+import yaml
 
 MODULE_DIR = Path(__file__).resolve().parents[2] / "src/eval/windeval/generators/infinite_diffusion"
 sys.path.insert(0, str(MODULE_DIR))
@@ -15,6 +18,15 @@ from data import (  # noqa: E402
     compute_stats,
     compute_zarr_stats,
 )
+from validate_era5_multiyear import (  # noqa: E402
+    expected_hourly_times,
+    validate_hourly_times,
+)
+from prepare_era5_multiyear import _month_specs  # noqa: E402
+from train import TrainConfig, save_ckpt  # noqa: E402
+
+
+CONFIG_DIR = MODULE_DIR / "configs"
 
 
 def _store(tmp_path: Path) -> tuple[Path, np.ndarray, np.ndarray]:
@@ -59,3 +71,68 @@ def test_lazy_conditional_sample_matches_eager_sample(tmp_path: Path) -> None:
     np.testing.assert_allclose(lazy_x.numpy(), eager_x.numpy(), rtol=0, atol=0)
     np.testing.assert_allclose(lazy_coords.numpy(), eager_coords.numpy(), rtol=0, atol=0)
     np.testing.assert_allclose(lazy_time.numpy(), eager_time.numpy(), rtol=0, atol=0)
+
+
+def test_thirteen_year_config_preserves_original_training_method() -> None:
+    original = yaml.safe_load((CONFIG_DIR / "era5_2023_m2cond.yaml").read_text())
+    scaled = yaml.safe_load((CONFIG_DIR / "era5_13year_m2cond.yaml").read_text())
+
+    for key in ("spacetime", "conditional", "n_frames", "frame_stride", "temporal_kernel"):
+        assert scaled[key] == original[key]
+    assert scaled["model"] == original["model"]
+    for key in (
+        "batch_size", "lr", "ema_decay", "n_steps", "warmup_steps",
+        "num_workers", "ckpt_every", "log_every", "device", "seed",
+    ):
+        assert scaled["train"][key] == original["train"][key]
+    assert scaled["data"]["crop"] == original["data"]["crop"]
+    assert scaled["data"]["levels"] == original["data"]["levels"]
+
+
+def test_expected_hourly_timeline_includes_leap_year_and_rejects_gaps() -> None:
+    times = expected_hourly_times(2019, 2020)
+    assert len(times) == 365 * 24 + 366 * 24
+    validate_hourly_times(times, first_year=2019, last_year=2020)
+
+    with pytest.raises(ValueError, match="incomplete or duplicated"):
+        validate_hourly_times(
+            np.delete(times, 10_000),
+            first_year=2019,
+            last_year=2020,
+        )
+
+
+def test_thirteen_year_download_schedule_excludes_benchmark_year() -> None:
+    years = list(range(2009, 2022))
+    specs = list(_month_specs(years))
+    assert len(specs) == 13 * 12
+    assert specs[0][:2] == (2009, 1)
+    assert specs[-1][:2] == (2021, 12)
+    assert all(year != 2023 for year, _, _ in specs)
+
+
+def test_checkpoint_write_is_atomic(tmp_path: Path) -> None:
+    model = torch.nn.Linear(2, 2)
+    optimizer = torch.optim.Adam(model.parameters())
+    stats = compute_stats(
+        np.ones((2, 1, 2, 2), dtype=np.float32),
+        np.ones((2, 1, 2, 2), dtype=np.float32),
+        np.array([49]),
+    )
+
+    class _Ema:
+        shadow = model
+
+    destination = tmp_path / "latest.pt"
+    save_ckpt(
+        destination,
+        model=model,
+        ema=_Ema(),
+        opt=optimizer,
+        step=17,
+        stats=stats,
+        cfg=TrainConfig(),
+    )
+    payload = torch.load(destination, map_location="cpu", weights_only=False)
+    assert payload["step"] == 17
+    assert not destination.with_suffix(".pt.tmp").exists()
