@@ -124,7 +124,9 @@ def compute_zarr_stats(
     levels: tuple[int, int] | None = (49, 66),
     time_chunk: int = 168,
     eps: float = 1e-6,
-) -> NormStats:
+    progress_path: str | Path | None = None,
+    stop_requested=None,
+) -> NormStats | None:
     """Compute training-only normalization statistics without loading the store into RAM.
 
     The scan uses float64 accumulators and reads at most ``time_chunk`` timestamps at once.
@@ -142,7 +144,38 @@ def compute_zarr_stats(
     counts = {name: np.zeros(n_levels, dtype=np.int64) for name in ("u", "v")}
 
     n_time = int(ds.sizes["time"])
-    for start in range(0, n_time, time_chunk):
+    progress = Path(progress_path) if progress_path is not None else None
+    next_start = 0
+    if progress is not None and progress.exists():
+        saved = np.load(progress)
+        if int(saved["n_time"]) != n_time or not np.array_equal(saved["levels"], level_vals):
+            raise ValueError(f"{progress}: progress metadata does not match {zarr_path}")
+        next_start = int(saved["next_start"])
+        for name in ("u", "v"):
+            sums[name] = saved[f"{name}_sum"]
+            sums_sq[name] = saved[f"{name}_sum_sq"]
+            counts[name] = saved[f"{name}_count"]
+
+    def save_progress(stop: int) -> None:
+        if progress is None:
+            return
+        temporary = progress.with_suffix(progress.suffix + ".tmp")
+        with temporary.open("wb") as stream:
+            np.savez(
+                stream,
+                n_time=n_time,
+                levels=level_vals,
+                next_start=stop,
+                u_sum=sums["u"],
+                u_sum_sq=sums_sq["u"],
+                u_count=counts["u"],
+                v_sum=sums["v"],
+                v_sum_sq=sums_sq["v"],
+                v_count=counts["v"],
+            )
+        temporary.replace(progress)
+
+    for start in range(next_start, n_time, time_chunk):
         stop = min(n_time, start + time_chunk)
         for name in ("u", "v"):
             values = np.asarray(ds[name].isel(time=slice(start, stop)).values, dtype=np.float64)
@@ -151,6 +184,10 @@ def compute_zarr_stats(
             sums[name] += np.where(finite, values, 0.0).sum(axis=axes)
             sums_sq[name] += np.where(finite, values * values, 0.0).sum(axis=axes)
             counts[name] += finite.sum(axis=axes)
+        save_progress(stop)
+        if stop_requested is not None and stop_requested() and stop < n_time:
+            ds.close()
+            return None
     ds.close()
 
     if np.any(counts["u"] == 0) or np.any(counts["v"] == 0):
@@ -163,7 +200,10 @@ def compute_zarr_stats(
 
     mean_u, std_u = moments("u")
     mean_v, std_v = moments("v")
-    return NormStats(mean_u, std_u, mean_v, std_v, level_vals)
+    result = NormStats(mean_u, std_u, mean_v, std_v, level_vals)
+    if progress is not None and progress.exists():
+        progress.unlink()
+    return result
 
 
 class WindCropDataset(Dataset):

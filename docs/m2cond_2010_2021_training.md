@@ -1,4 +1,4 @@
-# Thirteen-Year Conditional Base-Model Training
+# 2010-2021 Conditional Base-Model Training
 
 ## Experimental contract
 
@@ -22,7 +22,7 @@ does not update the model.
 
 | Role | Years | Treatment |
 |---|---|---|
-| Training | 2009-2021 | All 13 complete years, hourly |
+| Training | 2010-2021 | All 12 complete pre-validation years, hourly |
 | Validation | 2022 | Fixed validation batches every 2,000 steps |
 | Benchmark | 2023 | Never downloaded into either training store |
 
@@ -30,9 +30,9 @@ The source region and variables match the original model: 25-55 N, 225-255 E,
 ERA5 model levels 49-66, hourly `u` and `v`. "Full ERA5" here means all hourly data
 for this fixed regional/model-level contract, not the global ERA5 archive.
 
-Expected persistent storage is approximately 240 GB for training, 19 GB for
-validation, up to 2 GB of temporary monthly GRIB data, and roughly 35 GB if every
-2,000-step checkpoint is retained.
+The uncompressed training arrays are approximately 215 GB. The preparation job uses
+lossless Zstandard compression, so the corpus fits comfortably within the reported
+1.2 TB available on `/share/dean`.
 
 ## One-time environment check
 
@@ -49,8 +49,9 @@ test -f "$HOME/.cdsapirc" && echo "CDS credentials found"
 ## Prepare the stores
 
 Run both CPU-only jobs. They use Dean compute nodes but request no GPU. Downloads are
-monthly and resumable: re-submitting skips every month already appended. The training
-job computes normalization statistics only after all 13 years are present. Each job
+monthly and resumable: requeued jobs skip every month already appended. The normalization
+scan is also resumable by time chunk. The training-data job computes normalization
+statistics only after all 12 years are present. Each job
 then validates the exact hourly timeline, grid, levels, and statistics before writing
 its `.complete.json` gate.
 
@@ -60,7 +61,7 @@ cd "$HOME/balloon-env-dev-code"
 REPO="$PWD" \
 PYTHON="$HOME/envs/idiff-eval-titan/bin/python" \
 DATA_ROOT="/share/dean/$USER/balloon-research/era5" \
-sbatch src/eval/windeval/generators/infinite_diffusion/configs/prepare_era5_13year_dean.sbatch
+sbatch src/eval/windeval/generators/infinite_diffusion/configs/prepare_era5_2010_2021_dean.sbatch
 
 REPO="$PWD" \
 PYTHON="$HOME/envs/idiff-eval-titan/bin/python" \
@@ -68,16 +69,17 @@ DATA_ROOT="/share/dean/$USER/balloon-research/era5" \
 sbatch src/eval/windeval/generators/infinite_diffusion/configs/prepare_era5_2022_validation_dean.sbatch
 ```
 
-If either job reaches the 24-hour limit, submit that same command again. Do not delete
-the Zarr store.
+The 2010-2021 job checkpoints after its current month and requeues itself before each
+24-hour limit. If the smaller 2022 validation job reaches its limit, submit that command
+again. Do not delete either Zarr store or the normalization progress file.
 
 Verify both gates before training:
 
 ```bash
 DATA_ROOT="/share/dean/$USER/balloon-research/era5"
-cat "$DATA_ROOT/era5_2009_2021.complete.json"
+cat "$DATA_ROOT/era5_2010_2021.complete.json"
 cat "$DATA_ROOT/era5_2022.complete.json"
-du -sh "$DATA_ROOT/era5_2009_2021.zarr" "$DATA_ROOT/era5_2022.zarr"
+du -sh "$DATA_ROOT/era5_2010_2021.zarr" "$DATA_ROOT/era5_2022.zarr"
 ```
 
 ## Train
@@ -88,8 +90,8 @@ cd "$HOME/balloon-env-dev-code"
 REPO="$PWD" \
 PYTHON="$HOME/envs/idiff-eval-titan/bin/python" \
 DATA_ROOT="/share/dean/$USER/balloon-research/era5" \
-OUT_DIR="/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_13year" \
-sbatch src/eval/windeval/generators/infinite_diffusion/configs/train_era5_13year_dean.sbatch
+OUT_DIR="/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2010_2021" \
+sbatch src/eval/windeval/generators/infinite_diffusion/configs/train_era5_2010_2021_dean.sbatch
 ```
 
 The training job requests one RTX 6000 Ada GPU on `dean-compute-02`. Five minutes
@@ -101,14 +103,14 @@ Monitor:
 
 ```bash
 squeue --me
-tail -F idiff-13yr-JOB_ID.out
+tail -F idiff-12yr-JOB_ID.out
 ```
 
 The final and validation-selected checkpoints are:
 
 ```text
-/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_13year/latest.pt
-/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_13year/best.pt
+/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2010_2021/latest.pt
+/share/dean/$USER/balloon-research/runs/idiff_m2cond_era5_2010_2021/best.pt
 ```
 
 Use `latest.pt` for the strict step-100,000 comparison with the original checkpoint.

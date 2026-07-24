@@ -8,15 +8,29 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import signal
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
+from numcodecs import Blosc
 
 try:
     from .data import _open_zarr, compute_zarr_stats
 except ImportError:  # pragma: no cover - standalone cluster entrypoint
     from data import _open_zarr, compute_zarr_stats
+
+
+_STOP_REQUESTED = False
+
+
+def _request_graceful_stop(signum, _frame) -> None:
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+    print(
+        f"[prepare] received signal {signum}; stopping after the current month",
+        flush=True,
+    )
 
 
 def _month_specs(years: list[int]):
@@ -95,13 +109,17 @@ def _append_month(ds: xr.Dataset, out: Path) -> None:
 
     if not out.exists():
         chunks = (4, int(ds.sizes["level"]), 64, 64)
-        encoding = {name: {"chunks": chunks} for name in ("u", "v")}
+        compressor = Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
+        encoding = {
+            name: {"chunks": chunks, "compressor": compressor}
+            for name in ("u", "v")
+        }
         write(mode="w", encoding=encoding)
     else:
         write(mode="a", append_dim="time")
 
 
-def prepare(args: argparse.Namespace) -> None:
+def prepare(args: argparse.Namespace) -> bool:
     out = Path(args.out)
     work = Path(args.work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -140,12 +158,26 @@ def prepare(args: argparse.Namespace) -> None:
             grib.unlink()
             for index in work.glob(f"{grib.name}*.idx"):
                 index.unlink()
+        if _STOP_REQUESTED:
+            print(f"[prepare] paused after {year}-{month:02d}", flush=True)
+            return False
 
     if args.stats_out:
         print("[prepare] scanning training store for normalization statistics", flush=True)
-        stats = compute_zarr_stats(out, levels=levels, time_chunk=args.stats_time_chunk)
+        progress = Path(args.stats_out).with_suffix(".progress.npz")
+        stats = compute_zarr_stats(
+            out,
+            levels=levels,
+            time_chunk=args.stats_time_chunk,
+            progress_path=progress,
+            stop_requested=lambda: _STOP_REQUESTED,
+        )
+        if stats is None:
+            print(f"[prepare] statistics scan paused; progress -> {progress}", flush=True)
+            return False
         stats.save(args.stats_out)
         print(f"[prepare] statistics -> {args.stats_out}", flush=True)
+    return True
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -160,7 +192,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--levels", type=int, nargs=2, default=[49, 66])
     parser.add_argument("--keep-grib", action="store_true")
     args = parser.parse_args(argv)
-    prepare(args)
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, _request_graceful_stop)
+    complete = prepare(args)
+    if not complete:
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":
