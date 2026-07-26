@@ -11,6 +11,7 @@ sys.path.insert(0, str(EVAL_SRC))
 from windeval import artifact  # noqa: E402
 from windeval.benchmark_shared_baselines import (  # noqa: E402
     _ensure_contains_grid,
+    _validate_matching_conditions,
     _vertical_interpolate,
 )
 
@@ -53,3 +54,15 @@ def test_shared_grid_must_be_inside_source() -> None:
         assert "complete shared grid" in str(error)
     else:
         raise AssertionError("out-of-domain target grid should fail")
+
+
+def test_depth_runs_must_have_identical_conditions() -> None:
+    t2 = [{"month": 1, "day": 8, "hour": 0, "seed": 0}]
+    t3 = [{"month": 1, "day": 8, "hour": 0, "seed": 1}]
+
+    try:
+        _validate_matching_conditions({"T=2": t2, "T=3": t3})
+    except ValueError as error:
+        assert "condition set differs" in str(error)
+    else:
+        raise AssertionError("mismatched depth runs should fail")

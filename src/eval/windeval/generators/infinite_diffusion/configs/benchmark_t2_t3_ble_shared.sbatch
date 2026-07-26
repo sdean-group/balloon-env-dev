@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=t1-vs-ble
+#SBATCH --job-name=t2-t3-ble
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --nodelist=dean-compute-[01-02]
@@ -15,20 +15,23 @@ set -euo pipefail
 REPO="${REPO:-$SLURM_SUBMIT_DIR}"
 PY="${PYTHON:-$HOME/envs/idiff-eval-titan/bin/python}"
 REFERENCE="${REFERENCE:?set REFERENCE}"
-INFINITE_RUN="${INFINITE_RUN:?set INFINITE_RUN}"
+T2_RUN="${T2_RUN:?set T2_RUN}"
+T3_RUN="${T3_RUN:?set T3_RUN}"
 BLE_DECODER="${BLE_DECODER:?set BLE_DECODER}"
 OUTPUT="${OUTPUT:?set OUTPUT}"
 BLE_CACHE="${BLE_CACHE:-${OUTPUT%.*}_ble_cache.npz}"
 
 cd "$REPO"
 test -d "$REFERENCE"
-test -d "$INFINITE_RUN"
+test -d "$T2_RUN"
+test -d "$T3_RUN"
 test -f "$BLE_DECODER"
 export PYTHONPATH="$REPO/src/eval${PYTHONPATH:+:$PYTHONPATH}"
 
 "$PY" -m windeval.benchmark_shared_baselines \
   --reference "$REFERENCE" \
-  --infinite-run "$INFINITE_RUN" \
+  --infinite-runs "$T2_RUN" "$T3_RUN" \
+  --infinite-names "InfiniteDiffusion T=2" "InfiniteDiffusion T=3" \
   --ble-decoder "$BLE_DECODER" \
   --ble-cache "$BLE_CACHE" \
   --output "$OUTPUT"

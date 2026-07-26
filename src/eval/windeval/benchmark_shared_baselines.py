@@ -1,4 +1,4 @@
-"""Shared-protocol ERA5, InfiniteDiffusion T=1, and BLE-VAE benchmark.
+"""Shared-protocol ERA5, multiple InfiniteDiffusion depths, and BLE-VAE benchmark.
 
 Every scored field is placed on the same horizontal grid and pressure coordinates before
 the common metric suite is called. InfiniteDiffusion is evaluated at its true held-out
@@ -149,6 +149,27 @@ def _load_infinite_records(
                 }
             )
     return records
+
+
+def _condition_keys(records: list[dict]) -> set[tuple[int, int, int, int]]:
+    return {
+        (record["month"], record["day"], record["hour"], record["seed"])
+        for record in records
+    }
+
+
+def _validate_matching_conditions(records_by_name: dict[str, list[dict]]) -> None:
+    names = list(records_by_name)
+    expected = _condition_keys(records_by_name[names[0]])
+    for name in names[1:]:
+        actual = _condition_keys(records_by_name[name])
+        if actual != expected:
+            missing = sorted(expected - actual)
+            extra = sorted(actual - expected)
+            raise ValueError(
+                f"{name}: condition set differs from {names[0]}; "
+                f"missing={missing[:3]}, extra={extra[:3]}"
+            )
 
 
 def _reference_for_records(
@@ -303,7 +324,12 @@ def _score_floor(reference: xr.Dataset) -> dict:
     return scores
 
 
-def _write_report(rows: dict[str, dict], output: Path, sample_count: int) -> None:
+def _write_report(
+    rows: dict[str, dict],
+    output: Path,
+    sample_count: int,
+    infinite_names: list[str],
+) -> None:
     metrics = [
         "SR_E",
         "SR_div",
@@ -316,18 +342,18 @@ def _write_report(rows: dict[str, dict], output: Path, sample_count: int) -> Non
         "W1 cond (m/s)",
     ]
     lines = [
-        "# Shared-protocol ERA5, InfiniteDiffusion, and BLE-VAE benchmark",
+        "# Shared-protocol InfiniteDiffusion depth and BLE-VAE benchmark",
         "",
         f"All rows use the same {GRID_SIZE}x{GRID_SIZE} SF-centered grid at "
         f"{GRID_SPACING_KM:g} km spacing and the same 60-130 hPa pressure coordinates. "
         "ERA5 and InfiniteDiffusion model levels are linearly interpolated using the "
         "L137 pressures at 1013.25 hPa surface pressure. No spatial extrapolation is used.",
         "",
-        "The ERA5 reference uses exactly the held-out timestamps represented by the "
-        "InfiniteDiffusion condition files. InfiniteDiffusion is evaluated at those exact "
-        f"conditions. BLE-VAE contributes {sample_count} independent latent samples, equal "
-        "to the InfiniteDiffusion sample count, but cannot match timestamps because it is "
-        "unconditional. Its conditional W1 is therefore N/A.",
+        "The ERA5 reference uses exactly the held-out timestamps represented by every "
+        "InfiniteDiffusion condition set. " + ", ".join(infinite_names) + " are evaluated "
+        f"at the same conditions and seeds. BLE-VAE contributes {sample_count} independent "
+        "latent samples, equal to each InfiniteDiffusion sample count, but cannot match "
+        "timestamps because it is unconditional. Its conditional W1 is therefore N/A.",
         "",
         "Only the central BLE temporal frame and frame 0 of each InfiniteDiffusion block "
         "are scored. Temporal metrics are outside this comparison. Spectral metrics have "
@@ -351,11 +377,14 @@ def _write_report(rows: dict[str, dict], output: Path, sample_count: int) -> Non
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", required=True, type=Path)
-    parser.add_argument("--infinite-run", required=True, type=Path)
+    parser.add_argument("--infinite-runs", required=True, nargs="+", type=Path)
+    parser.add_argument("--infinite-names", required=True, nargs="+")
     parser.add_argument("--ble-decoder", required=True, type=Path)
     parser.add_argument("--ble-cache", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
+    if len(args.infinite_runs) != len(args.infinite_names):
+        parser.error("--infinite-runs and --infinite-names must have equal lengths")
 
     lat, lon = common_grid(
         CENTER_LAT,
@@ -363,10 +392,15 @@ def main(argv: list[str] | None = None) -> None:
         GRID_SPACING_KM,
         GRID_SIZE,
     )
-    infinite_records = _load_infinite_records(args.infinite_run, lat, lon)
-    reference = _reference_for_records(args.reference, infinite_records, lat, lon)
+    records_by_name = {
+        name: _load_infinite_records(path, lat, lon)
+        for name, path in zip(args.infinite_names, args.infinite_runs)
+    }
+    _validate_matching_conditions(records_by_name)
+    first_records = records_by_name[args.infinite_names[0]]
+    reference = _reference_for_records(args.reference, first_records, lat, lon)
     ble_records = _ble_records(
-        len(infinite_records),
+        len(first_records),
         args.ble_decoder,
         args.ble_cache,
         lat,
@@ -374,16 +408,18 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     rows = {"ERA5 self-split floor": _score_floor(reference)}
-    infinite_scores, _ = run_suite(
-        _pool(infinite_records, lat, lon),
-        reference.assign_coords(time=np.arange(reference.sizes["time"])),
-    )
-    infinite_scores.update(
-        conditional_w1_grouped(
-            _conditional_groups(infinite_records, reference, lat, lon)
+    for name in args.infinite_names:
+        records = records_by_name[name]
+        infinite_scores, _ = run_suite(
+            _pool(records, lat, lon),
+            reference.assign_coords(time=np.arange(reference.sizes["time"])),
         )
-    )
-    rows["InfiniteDiffusion T=1"] = infinite_scores
+        infinite_scores.update(
+            conditional_w1_grouped(
+                _conditional_groups(records, reference, lat, lon)
+            )
+        )
+        rows[name] = infinite_scores
 
     ble_scores, _ = run_suite(
         _pool(ble_records, lat, lon),
@@ -391,7 +427,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     ble_scores["W1 cond (m/s)"] = np.nan
     rows["BLE-VAE"] = ble_scores
-    _write_report(rows, args.output, len(infinite_records))
+    _write_report(
+        rows,
+        args.output,
+        len(first_records),
+        args.infinite_names,
+    )
     print(args.output)
 
 
