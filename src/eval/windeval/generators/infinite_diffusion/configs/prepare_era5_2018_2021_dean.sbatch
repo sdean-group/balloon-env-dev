@@ -3,9 +3,9 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --nodelist=dean-compute-[01-02]
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16G
+#SBATCH --time=7-00:00:00
 #SBATCH --signal=B:USR1@1800
 #SBATCH --requeue
 #SBATCH --output=era5-4yr-data-%j.out

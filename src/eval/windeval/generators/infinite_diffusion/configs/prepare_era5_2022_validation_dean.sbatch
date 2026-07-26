@@ -3,9 +3,9 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --nodelist=dean-compute-[01-02]
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16G
+#SBATCH --time=7-00:00:00
 #SBATCH --output=era5-2022-val-%j.out
 #SBATCH --error=era5-2022-val-%j.err
 #SBATCH --get-user-env

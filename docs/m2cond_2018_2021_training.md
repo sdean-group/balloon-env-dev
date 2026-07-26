@@ -48,10 +48,13 @@ test -f "$HOME/.cdsapirc" && echo "CDS credentials found"
 
 ## Prepare the stores
 
-Run both CPU-only jobs. They use Dean compute nodes but request no GPU. Downloads are
-monthly and resumable: requeued jobs skip every month already appended. The normalization
-scan is also resumable by time chunk. The training-data job computes normalization
-statistics only after all four years are present. Each job
+Run both CPU-only jobs. They use Dean compute nodes but request no GPU. Each job reserves
+only 2 CPUs and 16 GB of memory, while allowing up to seven days for the tape-backed CDS
+request queue. Downloads are monthly and resumable: requeued jobs skip every month already
+appended. Monthly requests deliberately match the ECMWF MARS tape organization; splitting
+them more finely can make retrieval slower. The normalization scan is also resumable by
+time chunk. The training-data job computes normalization statistics only after all four
+years are present. Each job
 then validates the exact hourly timeline, grid, levels, and statistics before writing
 its `.complete.json` gate.
 
@@ -70,7 +73,7 @@ sbatch src/eval/windeval/generators/infinite_diffusion/configs/prepare_era5_2022
 ```
 
 The 2018-2021 job checkpoints after its current month and requeues itself before each
-24-hour limit. If the smaller 2022 validation job reaches its limit, submit that command
+seven-day limit. If the smaller 2022 validation job reaches its limit, submit that command
 again. Do not delete either Zarr store or the normalization progress file.
 
 Verify both gates before training:
