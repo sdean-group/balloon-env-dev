@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,23 @@ except ImportError:  # pragma: no cover - standalone script path
                       WindCropDataset, WindPairDataset, WindSpaceTimeDataset)
     from net import EDMPrecond
     from spacetime import EDMPrecondSpaceTime
+
+
+_STOP_REQUESTED = False
+_REQUEUE_REQUIRED = False
+
+
+def _request_graceful_stop(signum, _frame) -> None:
+    """Ask the training loop to checkpoint after its current optimizer step."""
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+    print(f"[train] received signal {signum}; checkpointing after the current step", flush=True)
+
+
+def install_signal_handlers() -> None:
+    """Install the Slurm time-limit handler without affecting imported/test usage."""
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, _request_graceful_stop)
 
 
 # --------------------------------------------------------------------------- config
@@ -184,7 +202,9 @@ def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: Train
     }
     if coord_norm is not None:
         payload["coord_norm"] = coord_norm
-    torch.save(payload, path)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(path)
 
 
 def build_model(cfg: TrainConfig, n_channels: int):
@@ -249,6 +269,7 @@ def validation_loss(model, loader: DataLoader, cfg: TrainConfig,
 
 # --------------------------------------------------------------------------- train
 def train(cfg: TrainConfig) -> Path:
+    global _REQUEUE_REQUIRED
     # line-buffer stdout so step logs stream live to the SLURM .out file (which is block-
     # buffered by default when stdout is a file, making a running job look frozen).
     try:
@@ -381,10 +402,15 @@ def train(cfg: TrainConfig) -> Path:
                       step=step, stats=stats, cfg=cfg, coord_norm=coord_norm,
                       best_val_loss=best_val_loss)
             print(f"[train] checkpoint @ step {step}")
+        if _STOP_REQUESTED:
+            print(f"[train] graceful stop requested @ step {step}", flush=True)
+            break
 
     save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats,
               cfg=cfg, coord_norm=coord_norm, best_val_loss=best_val_loss)
-    print(f"[train] done @ step {step} -> {latest}")
+    state = "paused" if _STOP_REQUESTED and step < cfg.n_steps else "done"
+    _REQUEUE_REQUIRED = state == "paused"
+    print(f"[train] {state} @ step {step} -> {latest}")
     return latest
 
 
@@ -394,7 +420,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--set", nargs="*", default=[], help="overrides like train.n_steps=500 device=cpu")
     args = ap.parse_args(argv)
     cfg = load_config(args.config, args.set)
+    install_signal_handlers()
     train(cfg)
+    if _REQUEUE_REQUIRED:
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":

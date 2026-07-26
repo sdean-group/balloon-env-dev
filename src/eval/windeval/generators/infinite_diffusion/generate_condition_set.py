@@ -1,7 +1,7 @@
 """Generate the held-out condition set with lazy space-time InfiniteDiffusion.
 
 Each (month, day, hour, seed) block is saved independently, making a cluster job
-resumable.  T=1 and T=2 should be separate output directories with the same seed set.
+resumable. Every depth/split schedule must use a separate output directory.
 """
 from __future__ import annotations
 
@@ -34,8 +34,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-steps", type=int, default=18)
-    parser.add_argument("--outer-depth", type=int, choices=(1, 2), default=1)
-    parser.add_argument("--split-step", type=int, default=9)
+    parser.add_argument("--outer-depth", type=int, default=1)
+    parser.add_argument("--split-step", type=int)
+    parser.add_argument("--split-steps", type=int, nargs="+")
     parser.add_argument("--num-seeds", type=int, default=2)
     parser.add_argument("--months", type=int, nargs="+", default=list(MONTHS))
     parser.add_argument("--days", type=int, nargs="+", default=list(DAYS))
@@ -44,6 +45,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--stride", type=int, default=32)
     parser.add_argument("--time-stride", type=int, default=2)
     args = parser.parse_args(argv)
+    if args.split_step is not None and args.split_steps is not None:
+        parser.error("provide --split-step or --split-steps, not both")
+    if args.outer_depth == 1:
+        resolved_split_steps: list[int] = []
+    elif args.split_steps is not None:
+        resolved_split_steps = list(args.split_steps)
+    elif args.split_step is not None:
+        resolved_split_steps = [args.split_step]
+    else:
+        resolved_split_steps = [
+            round(index * args.num_steps / args.outer_depth)
+            for index in range(1, args.outer_depth)
+        ]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     sampler = SpaceTimeSampler(
@@ -56,7 +70,8 @@ def main(argv: list[str] | None = None) -> None:
         "checkpoint_step": sampler.step,
         "num_steps": args.num_steps,
         "outer_depth": args.outer_depth,
-        "split_step": args.split_step if args.outer_depth == 2 else None,
+        "split_step": resolved_split_steps[0] if args.outer_depth == 2 else None,
+        "split_steps": resolved_split_steps,
         "num_seeds": args.num_seeds,
         "window": args.window,
         "stride": args.stride,
@@ -86,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
             time_stride=args.time_stride,
             seed=seed,
             outer_depth=args.outer_depth,
-            split_step=args.split_step,
+            split_steps=resolved_split_steps,
         )
         t0 = args.time_stride
         y0 = args.stride

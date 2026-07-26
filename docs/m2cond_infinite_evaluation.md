@@ -197,3 +197,36 @@ high-frequency, divergent, and vortical variation than this ERA5 event. T=2 supp
 those components further, consistent with the earlier conclusion that it acts as a
 smoother. The condition-matched held-out benchmark across four seasons and paired seeds
 is required before deciding whether the small pointwise improvement generalizes.
+
+## Arbitrary Outer Depth
+
+`InfiniteSpaceTimeDiffusion` accepts any positive outer depth no larger than the number
+of EDM steps. A depth `T` has `T-1` strictly increasing split steps. Every segment is one
+lazy, cached `InfiniteTensor` phase whose input is the overlap-normalized previous phase.
+This preserves the existing deterministic random-access construction while allowing the
+dependency pyramid to grow to the requested depth.
+
+For an 18-step sampler:
+
+```text
+T=1: no splits
+T=2: --split-steps 9
+T=3: --split-steps 6 12
+T=4: --split-steps 4 9 14
+```
+
+If split steps are omitted, they are distributed as evenly as integer step indices allow.
+The T=2 `--split-step 9` option remains supported for compatibility.
+
+For the standard `4x64x64` query, expected model-forward counts are:
+
+```text
+T=1:    945
+T=2:  2,709
+T=3:  5,913
+T=4: 10,701
+```
+
+Because the held-out T=2 benchmark worsened every reported frame-realism metric, T=3 and
+T=4 should begin with an eight-condition pilot: day 8, hours 00/12, four seasons, one seed.
+Only a positive pilot result justifies generating the complete 112-block condition set.
