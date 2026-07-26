@@ -5,9 +5,28 @@ divergence-free (div << vorticity). If our port were wrong, this would fail.
 
 Run:  ../.venv/bin/python -m tests.test_ble_vae
 """
+import sys
+from pathlib import Path
+
+import msgpack
 import numpy as np
 
-from src.eval.windeval.generators import ble_vae
+EVAL_SRC = Path(__file__).resolve().parents[2] / "src/eval"
+sys.path.insert(0, str(EVAL_SRC))
+
+from windeval.generators import ble_vae  # noqa: E402
+
+
+def test_msgpack_extension_restores_flax_array() -> None:
+    expected = np.arange(6, dtype=np.float32).reshape(2, 3)
+    payload = msgpack.packb(
+        (expected.shape, expected.dtype.name, expected.tobytes()),
+        use_bin_type=True,
+    )
+
+    restored = ble_vae._msgpack_extension(1, payload)
+
+    np.testing.assert_array_equal(restored, expected)
 
 
 def run():
