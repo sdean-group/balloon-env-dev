@@ -12,6 +12,7 @@ from ... import artifact
 from ...metrics import run_suite
 from ...metrics.distributions import conditional_w1_grouped
 from ...metrics.suite import METRIC_INFO
+from .paired_statistics import bootstrap_summary
 
 
 def _files(path: Path) -> list[Path]:
@@ -74,7 +75,7 @@ def _load_run(
     path: Path,
     ref: xr.Dataset,
     conditions: set[tuple[int, int, int, int]],
-) -> tuple[xr.Dataset, list]:
+) -> list[dict]:
     records = []
     for file in _files(path):
         z = np.load(file)
@@ -96,9 +97,15 @@ def _load_run(
                 "seed": int(z["seed"]),
             }
         )
+    if not records:
+        raise ValueError(f"{path}: no records matched the common conditions")
+    return records
+
+
+def _score_records(records: list[dict], ref: xr.Dataset) -> dict:
     first = records[0]
     if not np.array_equal(first["levels"].astype(int), ref["level"].values.astype(int)):
-        raise ValueError(f"{path}: generated levels do not match ERA5")
+        raise ValueError("generated levels do not match ERA5")
     pooled = artifact.make_field(
         np.stack([record["u"] for record in records]),
         np.stack([record["v"] for record in records]),
@@ -125,7 +132,9 @@ def _load_run(
         ]
         reference = ref.sel(time=(ref.time.dt.month == month) & (ref.time.dt.hour == hour))
         groups.append((seeds, reference))
-    return pooled, groups
+    scores, _ = run_suite(pooled, _integer_time(ref))
+    scores.update(conditional_w1_grouped(groups))
+    return scores
 
 
 def _integer_time(ds: xr.Dataset) -> xr.Dataset:
@@ -166,11 +175,19 @@ def main() -> None:
     floor.update(conditional_w1_grouped(floor_groups))
     rows["ERA5 self-split floor"] = floor
 
+    records_by_name = {}
+    per_seed_scores = {}
     for name, run in zip(args.names, args.runs):
-        generated, groups = _load_run(run, ref, common_conditions)
-        scores, _ = run_suite(generated, _integer_time(ref))
-        scores.update(conditional_w1_grouped(groups))
-        rows[name] = scores
+        records = _load_run(run, ref, common_conditions)
+        records_by_name[name] = records
+        rows[name] = _score_records(records, ref)
+        per_seed_scores[name] = {
+            seed: _score_records(
+                [record for record in records if record["seed"] == seed],
+                ref,
+            )
+            for seed in sorted({record["seed"] for record in records})
+        }
 
     metrics = [
         "SR_E", "SR_div", "SR_vort", "L_eff (km)",
@@ -197,9 +214,61 @@ def main() -> None:
             for row in rows.values()
         ]
         lines.append(f"| {metric} ({direction}) | " + " | ".join(values) + " |")
+
+    paired_report = None
+    if len(args.names) == 2:
+        baseline, alternative = args.names
+        seeds = sorted(
+            set(per_seed_scores[baseline]) & set(per_seed_scores[alternative])
+        )
+        if len(seeds) < 2:
+            raise ValueError("paired comparison requires at least two common seeds")
+        paired_metrics = {}
+        for metric in metrics:
+            deltas = [
+                per_seed_scores[alternative][seed][metric]
+                - per_seed_scores[baseline][seed][metric]
+                for seed in seeds
+            ]
+            if all(np.isfinite(deltas)):
+                paired_metrics[metric] = bootstrap_summary(deltas)
+        paired_report = {
+            "baseline": baseline,
+            "alternative": alternative,
+            "delta": f"{alternative} minus {baseline}",
+            "interpretation": (
+                "Negative is better for every reported lower-is-better metric."
+            ),
+            "seeds": seeds,
+            "metrics": paired_metrics,
+            "per_seed_scores": per_seed_scores,
+        }
+        lines.extend([
+            "",
+            f"## Paired seed analysis: {alternative} minus {baseline}",
+            "",
+            "Negative deltas favor the alternative. Intervals are paired percentile "
+            "bootstrap intervals across seeds.",
+            "",
+            "| Metric | Mean delta | 95% CI |",
+            "|---|---:|---:|",
+        ])
+        for metric in metrics:
+            if metric not in paired_metrics:
+                continue
+            summary = paired_metrics[metric]
+            lines.append(
+                f"| {metric} | {summary['mean']:.4f} | "
+                f"[{summary['ci95_low']:.4f}, {summary['ci95_high']:.4f}] |"
+            )
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("\n".join(lines) + "\n")
     args.output.with_suffix(".json").write_text(json.dumps(rows, indent=2) + "\n")
+    if paired_report is not None:
+        args.output.with_suffix(".paired.json").write_text(
+            json.dumps(paired_report, indent=2) + "\n"
+        )
     print(args.output)
 
 
