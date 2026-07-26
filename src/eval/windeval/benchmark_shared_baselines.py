@@ -19,6 +19,7 @@ from .l137 import full_level_pressure
 from .metrics import run_suite
 from .metrics.distributions import conditional_w1_grouped
 from .metrics.suite import METRIC_INFO
+from .reference import SPLIT_DAY, split
 from .resample import common_grid, regrid
 
 CENTER_LAT = 37.77
@@ -298,8 +299,7 @@ def _ble_records(
 
 
 def _score_floor(reference: xr.Dataset) -> dict:
-    early = reference.sel(time=reference.time.dt.day < 11)
-    late = reference.sel(time=reference.time.dt.day >= 11)
+    early, late = split(reference)
     if early.sizes["time"] == 0 or late.sizes["time"] == 0:
         raise ValueError("reference needs held-out days on both sides of day 11")
     scores, _ = run_suite(
@@ -312,12 +312,12 @@ def _score_floor(reference: xr.Dataset) -> dict:
             a = reference.sel(
                 time=(reference.time.dt.month == month)
                 & (reference.time.dt.hour == hour)
-                & (reference.time.dt.day < 11)
+                & (reference.time.dt.day < SPLIT_DAY)
             )
             b = reference.sel(
                 time=(reference.time.dt.month == month)
                 & (reference.time.dt.hour == hour)
-                & (reference.time.dt.day >= 11)
+                & (reference.time.dt.day >= SPLIT_DAY)
             )
             floor_groups.append(([a], b))
     scores.update(conditional_w1_grouped(floor_groups))
