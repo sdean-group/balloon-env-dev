@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=02:00:00
-#SBATCH --output=t1-vs-ble-%j.out
-#SBATCH --error=t1-vs-ble-%j.err
+#SBATCH --output=t2-t3-ble-%j.out
+#SBATCH --error=t2-t3-ble-%j.err
 #SBATCH --get-user-env
 
 set -euo pipefail
@@ -27,6 +27,7 @@ test -d "$T2_RUN"
 test -d "$T3_RUN"
 test -f "$BLE_DECODER"
 export PYTHONPATH="$REPO/src/eval${PYTHONPATH:+:$PYTHONPATH}"
+"$PY" -c 'import msgpack, numpy, xarray; print("benchmark dependencies ready")'
 
 "$PY" -m windeval.benchmark_shared_baselines \
   --reference "$REFERENCE" \
