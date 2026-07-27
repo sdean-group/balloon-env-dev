@@ -350,7 +350,7 @@ def _write_report(
         "L137 pressures at 1013.25 hPa surface pressure. No spatial extrapolation is used.",
         "",
         "The ERA5 reference uses exactly the held-out timestamps represented by every "
-        "InfiniteDiffusion condition set. " + ", ".join(infinite_names) + " are evaluated "
+        "conditional model set. " + ", ".join(infinite_names) + " are evaluated "
         f"at the same conditions and seeds. BLE-VAE contributes {sample_count} independent "
         "latent samples, equal to each InfiniteDiffusion sample count, but cannot match "
         "timestamps because it is unconditional. Its conditional W1 is therefore N/A.",
@@ -377,14 +377,27 @@ def _write_report(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", required=True, type=Path)
-    parser.add_argument("--infinite-runs", required=True, nargs="+", type=Path)
-    parser.add_argument("--infinite-names", required=True, nargs="+")
+    parser.add_argument(
+        "--model-runs",
+        "--infinite-runs",
+        dest="model_runs",
+        required=True,
+        nargs="+",
+        type=Path,
+    )
+    parser.add_argument(
+        "--model-names",
+        "--infinite-names",
+        dest="model_names",
+        required=True,
+        nargs="+",
+    )
     parser.add_argument("--ble-decoder", required=True, type=Path)
     parser.add_argument("--ble-cache", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
-    if len(args.infinite_runs) != len(args.infinite_names):
-        parser.error("--infinite-runs and --infinite-names must have equal lengths")
+    if len(args.model_runs) != len(args.model_names):
+        parser.error("--model-runs and --model-names must have equal lengths")
 
     lat, lon = common_grid(
         CENTER_LAT,
@@ -394,10 +407,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     records_by_name = {
         name: _load_infinite_records(path, lat, lon)
-        for name, path in zip(args.infinite_names, args.infinite_runs)
+        for name, path in zip(args.model_names, args.model_runs)
     }
     _validate_matching_conditions(records_by_name)
-    first_records = records_by_name[args.infinite_names[0]]
+    first_records = records_by_name[args.model_names[0]]
     reference = _reference_for_records(args.reference, first_records, lat, lon)
     ble_records = _ble_records(
         len(first_records),
@@ -408,7 +421,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     rows = {"ERA5 self-split floor": _score_floor(reference)}
-    for name in args.infinite_names:
+    for name in args.model_names:
         records = records_by_name[name]
         infinite_scores, _ = run_suite(
             _pool(records, lat, lon),
@@ -431,7 +444,7 @@ def main(argv: list[str] | None = None) -> None:
         rows,
         args.output,
         len(first_records),
-        args.infinite_names,
+        args.model_names,
     )
     print(args.output)
 

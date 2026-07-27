@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=t2-t3-ble
+#SBATCH --job-name=base-t2-t3-ble
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --nodelist=dean-compute-[01-02]
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=02:00:00
-#SBATCH --output=t2-t3-ble-%j.out
-#SBATCH --error=t2-t3-ble-%j.err
+#SBATCH --output=base-t2-t3-ble-%j.out
+#SBATCH --error=base-t2-t3-ble-%j.err
 #SBATCH --get-user-env
 
 set -euo pipefail
@@ -15,6 +15,7 @@ set -euo pipefail
 REPO="${REPO:-$SLURM_SUBMIT_DIR}"
 PY="${PYTHON:-$HOME/envs/idiff-eval-titan/bin/python}"
 REFERENCE="${REFERENCE:?set REFERENCE}"
+BASE_RUN="${BASE_RUN:?set BASE_RUN}"
 T2_RUN="${T2_RUN:?set T2_RUN}"
 T3_RUN="${T3_RUN:?set T3_RUN}"
 BLE_DECODER="${BLE_DECODER:?set BLE_DECODER}"
@@ -23,6 +24,7 @@ BLE_CACHE="${BLE_CACHE:-${OUTPUT%.*}_ble_cache.npz}"
 
 cd "$REPO"
 test -d "$REFERENCE"
+test -d "$BASE_RUN"
 test -d "$T2_RUN"
 test -d "$T3_RUN"
 test -f "$BLE_DECODER"
@@ -31,8 +33,8 @@ export PYTHONPATH="$REPO/src/eval${PYTHONPATH:+:$PYTHONPATH}"
 
 "$PY" -m windeval.benchmark_shared_baselines \
   --reference "$REFERENCE" \
-  --infinite-runs "$T2_RUN" "$T3_RUN" \
-  --infinite-names "InfiniteDiffusion T=2" "InfiniteDiffusion T=3" \
+  --model-runs "$BASE_RUN" "$T2_RUN" "$T3_RUN" \
+  --model-names "Direct base model" "InfiniteDiffusion T=2" "InfiniteDiffusion T=3" \
   --ble-decoder "$BLE_DECODER" \
   --ble-cache "$BLE_CACHE" \
   --output "$OUTPUT"

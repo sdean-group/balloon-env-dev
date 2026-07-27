@@ -1,19 +1,20 @@
-# Shared T=2, T=3, and BLE-VAE benchmark
+# Shared direct-base, T=2, T=3, and BLE-VAE benchmark
 
-This benchmark asks how InfiniteDiffusion T=2, InfiniteDiffusion T=3, and BLE-VAE score
-when the metric
-implementation, horizontal grid, pressure coordinates, ERA5 reference samples, and
-generated sample count are controlled.
+This benchmark separates base-model quality from overlap propagation while also retaining
+BLE-VAE as an alternative generator.
 
 ## Protocol
 
-- Reference: held-out 2023 ERA5 timestamps shared by the T=2 and T=3 condition sets.
+- Reference: held-out 2023 ERA5 timestamps shared by every conditional model set.
 - Horizontal grid: 16x16 cells at 50 km, centered at 37.77 N, 237.58 E.
 - Vertical grid: 60, 70, ..., 130 hPa.
 - ERA5 and InfiniteDiffusion vertical conversion: linear interpolation from model levels
   49-66 using L137 pressure at a representative 1013.25 hPa surface pressure.
-- InfiniteDiffusion sample: frame 0 from each condition file. T=2 and T=3 must contain
-  identical conditions and seeds; the benchmark rejects mismatched or partial runs.
+- Direct-base sample: one finite 64x64x4 model call using the same coordinate-keyed noise
+  as the InfiniteDiffusion field at the requested coordinates.
+- InfiniteDiffusion sample: frame 0 from each condition file.
+- Direct base, T=2, and T=3 must contain identical conditions and seeds; the benchmark
+  rejects mismatched or partial runs.
 - BLE-VAE sample: central frame from one independent latent draw per condition file.
 - Metrics: the same spatial spectra, marginal W1, and tail errors for every row.
 - Conditional W1: reported for InfiniteDiffusion and the ERA5 floor, but N/A for BLE-VAE
@@ -67,18 +68,31 @@ sbatch \
   src/eval/windeval/generators/infinite_diffusion/configs/generate_condition_set.sbatch
 ```
 
+Generate the direct-base condition set:
+
+```bash
+CHECKPOINT="$HOME/wind-idiff-checkpoint-eval/idiff_m2cond_latest.pt" \
+OUTPUT_DIR="$DATA_ROOT/outputs/m2cond_conditions_direct_base" \
+NUM_SEEDS=2 \
+PYTHON="$PY" \
+sbatch \
+  src/eval/windeval/generators/infinite_diffusion/configs/generate_direct_base_condition_set.sbatch
+```
+
 After that job completes, submit the CPU-only scoring job:
 
 ```bash
 REFERENCE="$DATA_ROOT/era5/era5_heldout_conditional.zarr" \
+BASE_RUN="$DATA_ROOT/outputs/m2cond_conditions_direct_base" \
 T2_RUN="$HOME/wind-idiff-checkpoint-eval/outputs/m2cond_conditions_t2_split9" \
 T3_RUN="$DATA_ROOT/outputs/m2cond_conditions_t3" \
 BLE_DECODER="$DATA_ROOT/ble/offlineskies22_decoder.msgpack" \
-OUTPUT="$DATA_ROOT/outputs/t2_t3_vs_ble_shared.md" \
+BLE_CACHE="$DATA_ROOT/outputs/t2_t3_vs_ble_shared_ble_cache.npz" \
+OUTPUT="$DATA_ROOT/outputs/base_t2_t3_vs_ble_shared.md" \
 PYTHON="$PY" \
 sbatch \
   src/eval/windeval/generators/infinite_diffusion/configs/benchmark_t2_t3_ble_shared.sbatch
 ```
 
-The job writes `t2_t3_vs_ble_shared.md`, `t2_t3_vs_ble_shared.json`, and a reusable BLE
-sample cache named `t2_t3_vs_ble_shared_ble_cache.npz`.
+The job writes `base_t2_t3_vs_ble_shared.md` and
+`base_t2_t3_vs_ble_shared.json`. It reuses the existing BLE sample cache.
