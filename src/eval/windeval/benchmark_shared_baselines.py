@@ -1,9 +1,9 @@
-"""Shared-protocol ERA5, multiple InfiniteDiffusion depths, and BLE-VAE benchmark.
+"""Shared-protocol ERA5 and wind-generator benchmark.
 
 Every scored field is placed on the same horizontal grid and pressure coordinates before
-the common metric suite is called. InfiniteDiffusion is evaluated at its true held-out
-conditions. BLE-VAE is unconditional, so it is evaluated as an equal-size sample pool
-and does not receive a conditional-W1 score.
+the common metric suite is called. Conditional generators are evaluated at their true
+held-out conditions. BLE-VAE is unconditional, so it is evaluated as an equal-size
+sample pool and does not receive a conditional-W1 score.
 """
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ def _condition_files(path: Path) -> list[Path]:
     return files
 
 
-def _load_infinite_records(
+def _load_conditional_records(
     path: Path,
     lat: np.ndarray,
     lon: np.ndarray,
@@ -328,7 +328,7 @@ def _write_report(
     rows: dict[str, dict],
     output: Path,
     sample_count: int,
-    infinite_names: list[str],
+    conditional_names: list[str],
 ) -> None:
     metrics = [
         "SR_E",
@@ -342,20 +342,20 @@ def _write_report(
         "W1 cond (m/s)",
     ]
     lines = [
-        "# Shared-protocol InfiniteDiffusion depth and BLE-VAE benchmark",
+        "# Shared-protocol wind-generator benchmark",
         "",
         f"All rows use the same {GRID_SIZE}x{GRID_SIZE} SF-centered grid at "
         f"{GRID_SPACING_KM:g} km spacing and the same 60-130 hPa pressure coordinates. "
-        "ERA5 and InfiniteDiffusion model levels are linearly interpolated using the "
+        "ERA5 and conditional-model levels are linearly interpolated using the "
         "L137 pressures at 1013.25 hPa surface pressure. No spatial extrapolation is used.",
         "",
         "The ERA5 reference uses exactly the held-out timestamps represented by every "
-        "conditional model set. " + ", ".join(infinite_names) + " are evaluated "
+        "conditional model set. " + ", ".join(conditional_names) + " are evaluated "
         f"at the same conditions and seeds. BLE-VAE contributes {sample_count} independent "
-        "latent samples, equal to each InfiniteDiffusion sample count, but cannot match "
+        "latent samples, equal to each conditional-model sample count, but cannot match "
         "timestamps because it is unconditional. Its conditional W1 is therefore N/A.",
         "",
-        "Only the central BLE temporal frame and frame 0 of each InfiniteDiffusion block "
+        "Only the central BLE temporal frame and frame 0 of each conditional-model block "
         "are scored. Temporal metrics are outside this comparison. Spectral metrics have "
         "limited wavenumber resolution on a 16x16 grid.",
         "",
@@ -406,7 +406,7 @@ def main(argv: list[str] | None = None) -> None:
         GRID_SIZE,
     )
     records_by_name = {
-        name: _load_infinite_records(path, lat, lon)
+        name: _load_conditional_records(path, lat, lon)
         for name, path in zip(args.model_names, args.model_runs)
     }
     _validate_matching_conditions(records_by_name)
@@ -423,16 +423,16 @@ def main(argv: list[str] | None = None) -> None:
     rows = {"ERA5 self-split floor": _score_floor(reference)}
     for name in args.model_names:
         records = records_by_name[name]
-        infinite_scores, _ = run_suite(
+        model_scores, _ = run_suite(
             _pool(records, lat, lon),
             reference.assign_coords(time=np.arange(reference.sizes["time"])),
         )
-        infinite_scores.update(
+        model_scores.update(
             conditional_w1_grouped(
                 _conditional_groups(records, reference, lat, lon)
             )
         )
-        rows[name] = infinite_scores
+        rows[name] = model_scores
 
     ble_scores, _ = run_suite(
         _pool(ble_records, lat, lon),

@@ -31,5 +31,17 @@ done
   --device cuda \
   --num-steps "${NUM_STEPS:-18}" \
   --num-seeds "${NUM_SEEDS:-2}" \
+  --core-size "${CORE_SIZE:-80}" \
+  --halo-size "${HALO_SIZE:-8}" \
+  --core-time "${CORE_TIME:-2}" \
+  --halo-time "${HALO_TIME:-1}" \
+  --query-size "${QUERY_SIZE:-16}" \
+  --query-frames "${QUERY_FRAMES:-4}" \
+  --query-t0 "${QUERY_T0:-1}" \
+  --query-y0 "${QUERY_Y0:-32}" \
+  --query-x0 "${QUERY_X0:-32}" \
+  --lat-origin "${LAT_ORIGIN:-27}" \
+  --lon-origin "${LON_ORIGIN:-227}" \
   --window-batch-size "${WINDOW_BATCH_SIZE:-1}" \
+  --max-cached-charts "${MAX_CACHED_CHARTS:-16}" \
   "${FILTER_ARGS[@]}"

@@ -141,3 +141,27 @@ def test_heldout_condition_geometry_has_expected_bounded_work() -> None:
     assert keys == [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
     assert len(field._factor_offsets) == 4
     assert field.model_window_evaluations == 3 * 4 * (2 * field.sampler.num_steps - 1)
+
+
+def test_full_shared_benchmark_query_uses_sixteen_charts() -> None:
+    class ConditionSampler(_ToySampler):
+        tau = 4
+
+    field = CanonicalFactorGraphField(
+        ConditionSampler(),
+        config=ChartConfig(
+            core_time=2,
+            core_size=80,
+            halo_time=1,
+            halo_size=8,
+            window_size=64,
+            window_stride=32,
+            time_stride=2,
+        ),
+    )
+    keys = field.chart_keys_for_query(2, 6, 32, 96, 32, 96)
+
+    assert len(keys) == 16
+    assert {key[0] for key in keys} == {0, 1, 2, 3}
+    assert {key[1] for key in keys} == {0, 1}
+    assert {key[2] for key in keys} == {0, 1}
