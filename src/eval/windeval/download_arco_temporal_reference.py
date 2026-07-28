@@ -50,23 +50,32 @@ def download(output: Path, *, workers: int = 4) -> Path:
                 f"[arco] downloading 2023-{month:02d}-{day:02d}, all 24 hours",
                 flush=True,
             )
-            selected = source.sel(
-                time=_times(month, day),
-                hybrid=slice(49, 66),
-                latitude=slice(55, 25),
-                longitude=slice(225, 255),
-            )[["u_component_of_wind", "v_component_of_wind"]]
-            selected = selected.rename(
-                {
-                    "u_component_of_wind": "u",
-                    "v_component_of_wind": "v",
-                    "hybrid": "level",
-                    "latitude": "y",
-                    "longitude": "x",
-                }
-            ).rename_vars({"y": "lat", "x": "lon"})
-            selected = selected.transpose("time", "level", "y", "x")
-            selected = selected.load(scheduler="threads", num_workers=workers)
+            frames = []
+            for hour, timestamp in enumerate(_times(month, day)):
+                # ARCO is globally chunked. Loading all 24 timestamps together can
+                # retain many full source chunks and exceed cluster memory even though
+                # the final regional array is small.
+                frame = source.sel(
+                    time=[timestamp],
+                    hybrid=slice(49, 66),
+                    latitude=slice(55, 25),
+                    longitude=slice(225, 255),
+                )[["u_component_of_wind", "v_component_of_wind"]]
+                frame = frame.rename(
+                    {
+                        "u_component_of_wind": "u",
+                        "v_component_of_wind": "v",
+                        "hybrid": "level",
+                        "latitude": "y",
+                        "longitude": "x",
+                    }
+                ).rename_vars({"y": "lat", "x": "lon"})
+                frame = frame.transpose("time", "level", "y", "x")
+                frames.append(
+                    frame.load(scheduler="threads", num_workers=workers)
+                )
+                print(f"[arco]   hour {hour + 1}/24", flush=True)
+            selected = xr.concat(frames, dim="time")
             if not bool(np.isfinite(selected[["u", "v"]].to_array().values).all()):
                 raise RuntimeError(f"non-finite values in month={month}, day={day}")
             selected.attrs = {
@@ -107,7 +116,7 @@ def download(output: Path, *, workers: int = 4) -> Path:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args(argv)
     download(args.output, workers=args.workers)
 

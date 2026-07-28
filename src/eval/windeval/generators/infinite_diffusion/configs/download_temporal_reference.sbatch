@@ -3,7 +3,7 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=24G
+#SBATCH --mem=48G
 #SBATCH --time=04:00:00
 #SBATCH --output=era5-temporal-%j.out
 #SBATCH --error=era5-temporal-%j.err
@@ -18,4 +18,4 @@ PY="${PYTHON:-python}"
 PYTHONPATH="$REPO/src/eval${PYTHONPATH:+:$PYTHONPATH}" \
 "$PY" -m windeval.download_arco_temporal_reference \
   --output "${REFERENCE:?set REFERENCE}" \
-  --workers "${WORKERS:-4}"
+  --workers "${WORKERS:-1}"
