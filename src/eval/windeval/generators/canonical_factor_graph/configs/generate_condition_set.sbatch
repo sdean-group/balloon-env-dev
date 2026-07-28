@@ -1,10 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=cfgd-cond-set
 #SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --nodelist=dean-compute-[01-02]
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=cfgd-cond-set-%j.out
 #SBATCH --error=cfgd-cond-set-%j.err
 #SBATCH --get-user-env
