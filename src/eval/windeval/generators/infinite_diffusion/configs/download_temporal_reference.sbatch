@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=era5-temporal
 #SBATCH --partition=gpu
+#SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=04:00:00

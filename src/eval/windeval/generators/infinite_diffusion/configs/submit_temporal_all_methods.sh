@@ -22,7 +22,7 @@ mkdir -p "$DATA_ROOT/era5" "$DATA_ROOT/outputs"
 
 reference_job=$(
   REFERENCE="$REFERENCE" PYTHON="$PYTHON" \
-  sbatch --parsable --nodelist='dean-compute-[01-02]' \
+  sbatch --parsable --nodes=1 --nodelist='dean-compute-[01-02]' \
     src/eval/windeval/generators/infinite_diffusion/configs/download_temporal_reference.sbatch
 )
 reference_job="${reference_job%%;*}"
@@ -41,6 +41,7 @@ submit_generation() {
   CHECKPOINT="$CHECKPOINT" \
   PYTHON="$PYTHON" \
   sbatch --parsable \
+    --nodes=1 \
     --job-name="$name" \
     --time="$limit" \
     --nodelist='dean-compute-[01-02]' \
@@ -69,6 +70,7 @@ benchmark_job=$(
   OUTPUT="$OUTPUT" \
   PYTHON="$PYTHON" \
   sbatch --parsable \
+    --nodes=1 \
     --dependency="afterok:$reference_job:$direct_job:$t1_job:$t2_job:$t3_job:$cfgd_job" \
     --nodelist='dean-compute-[01-02]' \
     src/eval/windeval/generators/infinite_diffusion/configs/benchmark_temporal_all_methods.sbatch

@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=wind-temporal
 #SBATCH --partition=gpu
+#SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G

@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=wind-temp-bench
 #SBATCH --partition=gpu
+#SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
