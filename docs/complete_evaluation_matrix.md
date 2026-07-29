@@ -1,206 +1,171 @@
-# Wind Generator Evaluation Matrix
+# Wind Generator Benchmark Results
 
-## Objective
+## Scope
 
-Determine whether wind-field quality is limited by the frozen base denoiser, by the
-InfiniteDiffusion overlap algorithm, or by both. Every architecture comparison must hold
-the checkpoint, conditions, seeds, grid, pressure levels, diffusion schedule, and ERA5
-reference fixed.
+This document compares only:
 
-## Methods
+1. Held-out ERA5.
+2. Independent direct diffusion tiles with no cross-tile consistency mechanism.
+3. InfiniteDiffusion with T=1, T=2, and T=3.
+4. BLE-VAE.
 
-| Method | Role |
+All conclusions below concern the original frozen conditional diffusion checkpoint. No
+multiyear retrained checkpoint is included.
+
+## Shared Spatial Protocol
+
+- ERA5 reference: days 8-14 of January, April, July, and October 2023 at 00 and
+  12 UTC.
+- Conditional generators: 56 matched conditions and two seeds, giving 112 samples per
+  method.
+- BLE-VAE: 112 independent latent samples. It is unconditional and therefore has no
+  condition-matched score.
+- Common evaluation region: 16x16 cells centered near San Francisco at 50 km spacing.
+- Vertical range: 60-130 hPa using the same interpolation for ERA5 and every conditional
+  method.
+- Scored time: frame 0 of every four-frame generated block.
+- ERA5 floor: discrepancy between independent held-out ERA5 subsets under the same
+  metric. It is not a perfect-score row.
+
+## Spatial Results
+
+Lower is better for every reported metric.
+
+| Metric | ERA5 self-split floor | Independent tiles | InfiniteDiffusion T=1 | InfiniteDiffusion T=2 | InfiniteDiffusion T=3 | BLE-VAE |
+|---|---:|---:|---:|---:|---:|---:|
+| SR_E | **0.2294** | 1.4713 | **1.3186** | 1.6400 | 1.7589 | 2.2428 |
+| SR_div | **0.2615** | 1.7407 | **1.5738** | 1.8793 | 2.0306 | 4.5233 |
+| SR_vort | **0.1790** | 0.9928 | **0.8048** | 1.1082 | 1.2037 | 1.6154 |
+| L_eff (km) | **100.0000** | 800.0000 | **266.6667** | 800.0000 | 800.0000 | 800.0000 |
+| W1 u (m/s) | **2.3560** | **3.7453** | 4.3950 | 4.4838 | 4.5663 | 13.0459 |
+| W1 v (m/s) | **1.2391** | 4.5923 | 4.7755 | 4.8474 | 4.9197 | **3.9746** |
+| Tail error 1% (m/s) | **3.2152** | 9.9525 | 9.9422 | 10.0725 | 10.2144 | **9.3268** |
+| Tail error 0.1% (m/s) | **3.3188** | 12.5066 | 12.4805 | 12.6779 | 12.8194 | **10.6333** |
+| Conditional W1 (m/s) | **3.3060** | **4.3383** | 4.7238 | 4.7975 | 4.8668 | N/A |
+
+Bold values identify the ERA5 floor and the best generated method for each metric.
+
+## What Each Spatial Metric Measures
+
+| Metric | Interpretation |
 |---|---|
-| ERA5 self-split floor | Expected discrepancy between two held-out ERA5 subsets |
-| Direct base model | Measures the frozen denoiser without infinite-field synchronization |
-| InfiniteDiffusion T=1 | Current primary infinite-field baseline |
-| InfiniteDiffusion T=2 | Depth ablation |
-| InfiniteDiffusion T=3 | Depth ablation |
-| CFGD | Per-step shared-chart consensus |
-| SyncTweedies adaptation | Per-step consensus of predicted clean fields |
-| Overlap-guided adaptation | Separate diffusion paths with overlap-loss guidance |
-| Consensus-equilibrium adaptation | Fixed-round denoiser and consensus corrections |
-| BLE-VAE | Existing unconditional wind-generator baseline |
+| SR_E | Error in the spatial kinetic-energy spectrum |
+| SR_div | Error in the horizontal-divergence spectrum |
+| SR_vort | Error in the horizontal-vorticity spectrum |
+| L_eff | Smallest wavelength retained before generated spectral energy falls below ERA5 |
+| W1 u, W1 v | Wasserstein distance between generated and ERA5 wind-component distributions |
+| Tail errors | Absolute error in extreme wind-speed quantiles |
+| Conditional W1 | Distribution error when location and time conditions are matched |
 
-## Fixed Spatial Protocol
+## Direct Tiles Versus InfiniteDiffusion
 
-- Reference: held-out ARCO-ERA5 from days 8-14 of January, April, July, and
-  October 2023 at 00 and 12 UTC.
-- Generated set: 112 samples per conditional method: 56 conditions and two seeds.
-- Comparison grid: common 16x16 crop at 50 km spacing.
-- Vertical coordinates: 60-130 hPa, with the same interpolation for every method.
-- Scored frame: frame 0 of each four-frame generated block.
-- BLE-VAE: 112 independent latent samples; conditional W1 is not applicable.
+The values below are InfiniteDiffusion minus the independent-tile result. Negative is an
+improvement; positive is a regression.
 
-## Table 1: Primary Spatial Quality
+| Metric | T=1 minus direct | T=2 minus direct | T=3 minus direct |
+|---|---:|---:|---:|
+| SR_E | **-0.1527** | +0.1687 | +0.2876 |
+| SR_div | **-0.1669** | +0.1386 | +0.2899 |
+| SR_vort | **-0.1880** | +0.1154 | +0.2109 |
+| W1 u | +0.6497 | +0.7385 | +0.8210 |
+| W1 v | +0.1832 | +0.2551 | +0.3274 |
+| Tail error 1% | -0.0103 | +0.1200 | +0.2619 |
+| Tail error 0.1% | -0.0261 | +0.1713 | +0.3128 |
+| Conditional W1 | +0.3855 | +0.4592 | +0.5285 |
 
-This is the principal architecture table. Lower is better for every metric.
+T=1 improves spatial spectral structure relative to independent tiles, particularly
+energy, divergence, vorticity, and effective resolution. It worsens the bulk
+distribution and condition-matched W1 scores. T=2 and T=3 are worse than independent
+tiles on nearly every listed metric.
 
-| Metric | ERA5 floor | Direct | ID T=1 | ID T=2 | ID T=3 | CFGD | SyncTweedies | Overlap-guided | Consensus equilibrium | BLE-VAE |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| SR_E | | | | | | | | | | |
-| SR_div | | | | | | | | | | |
-| SR_vort | | | | | | | | | | |
-| L_eff (km) | | | | | | | | | | |
-| W1 u (m/s) | | | | | | | | | | |
-| W1 v (m/s) | | | | | | | | | | |
-| Tail error 1% (m/s) | | | | | | | | | | |
-| Tail error 0.1% (m/s) | | | | | | | | | | |
-| Conditional W1 (m/s) | | | | | | | | | N/A |
+## InfiniteDiffusion Depth Comparison
 
-Generated report:
+The values below are changes relative to T=1. Positive is worse.
+
+| Metric | T=2 minus T=1 | T=3 minus T=1 |
+|---|---:|---:|
+| SR_E | +0.3214 | +0.4403 |
+| SR_div | +0.3055 | +0.4568 |
+| SR_vort | +0.3034 | +0.3989 |
+| W1 u | +0.0888 | +0.1713 |
+| W1 v | +0.0719 | +0.1442 |
+| Tail error 1% | +0.1303 | +0.2722 |
+| Tail error 0.1% | +0.1974 | +0.3389 |
+| Conditional W1 | +0.0737 | +0.1430 |
+
+Under this checkpoint and protocol, increasing T consistently degrades measured spatial
+quality. T=1 is the strongest InfiniteDiffusion setting.
+
+## InfiniteDiffusion Versus BLE-VAE
+
+| Comparison | Result |
+|---|---|
+| Spatial energy spectrum | Every InfiniteDiffusion depth beats BLE-VAE |
+| Divergence spectrum | Every InfiniteDiffusion depth substantially beats BLE-VAE |
+| Vorticity spectrum | Every InfiniteDiffusion depth beats BLE-VAE |
+| Effective resolution | T=1 beats BLE-VAE; T=2 and T=3 tie its reported value |
+| u distribution | Every InfiniteDiffusion depth substantially beats BLE-VAE |
+| v distribution | BLE-VAE beats every InfiniteDiffusion depth |
+| Extreme-wind tails | BLE-VAE beats every InfiniteDiffusion depth |
+| Conditional distribution | Not comparable because BLE-VAE is unconditional |
+
+InfiniteDiffusion is better overall for spatial structure and the zonal-wind
+distribution. BLE-VAE is better on the meridional marginal and extreme quantiles.
+Therefore, the accurate statement is not that InfiniteDiffusion wins every metric; it
+wins the principal spatial-physics metrics while BLE-VAE retains specific distributional
+advantages.
+
+## Current Conclusions
+
+1. Every generated method remains substantially separated from the ERA5 floor.
+2. Independent tiles outperform InfiniteDiffusion on marginal and conditional
+   distribution metrics.
+3. InfiniteDiffusion T=1 improves spatial spectral structure enough to outperform both
+   independent tiles and BLE-VAE on SR_E, SR_div, SR_vort, and effective resolution.
+4. Increasing T from 1 to 2 or 3 does not improve spatial realism under this protocol.
+5. The gap between direct tiles and ERA5 shows that synchronization is not the only
+   problem; the frozen base denoiser is itself a major quality limitation.
+6. Because architecture changes move metrics in different directions, conclusions must
+   report spectra, distributions, and extremes separately.
+
+## Temporal Benchmark
+
+The temporal benchmark is still running and no temporal values are available yet. The
+completed report will compare:
+
+- ERA5 self-split floor.
+- Independent four-hour diffusion tiles concatenated without consistency.
+- InfiniteDiffusion T=1.
+- InfiniteDiffusion T=2.
+- InfiniteDiffusion T=3.
+- BLE-VAE as N/A because its decoder slices have no validated hourly spacing.
+
+It will report:
+
+1. Temporal spectral residual, SR_time.
+2. Passive-agent dispersion log-MSD RMSE.
+3. Final trajectory spread ratio.
+4. Mean adjacent hourly wind change.
+5. Temporal seam-jump ratio.
+
+Expected output:
 
 ```text
-/share/dean/$USER/balloon-research/outputs/all_methods_plus_sync_shared.md
+/share/dean/$USER/balloon-research/outputs/all_methods_temporal.md
 ```
 
-## Fixed Temporal Protocol
+The temporal table should be inserted here only after the benchmark completes. Empty or
+fabricated values must not be used.
 
-- Four 24-hour episodes beginning at 00 UTC on January 8, April 8, July 8, and
-  October 8, 2023.
-- ERA5 day 8 is the reference; day 9 is the independent seasonal floor.
-- Same seed, 16x16 grid, pressure coordinates, and physical conditions for all
-  conditional generators.
-- Direct base concatenates six independently sampled four-hour blocks.
-- Every infinite-field method generates the complete 24-hour query as one field.
-- BLE-VAE is not scored because its decoder slices have no established physical hourly
-  spacing.
+## Required Follow-Up
 
-## Table 2: Primary Temporal Quality
+After temporal evaluation, the remaining required comparison is a checkpoint ablation:
 
-| Metric | ERA5 floor | Direct | ID T=1 | ID T=2 | ID T=3 | CFGD | SyncTweedies | Overlap-guided | Consensus equilibrium | BLE-VAE |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| SR_time, lower | | | | | | | | | | N/A |
-| Dispersion log-MSD RMSE, lower | | | | | | | | | | N/A |
-| Final spread ratio, near 1 | | | | | | | | | | N/A |
-| Mean adjacent change (m/s), match ERA5 | | | | | | | | | | N/A |
-| Time-seam jump ratio, near 1 | | | | | | | | | | N/A |
-
-Generated report:
-
-```text
-/share/dean/$USER/balloon-research/outputs/all_methods_plus_sync_temporal.md
-```
-
-## Table 3: Computational Cost
-
-Report quality together with cost. Runtime must use the same GPU type or be normalized
-by measured denoiser throughput.
-
-| Method | Seconds/sample | Model-window evaluations | Charts or windows generated | Peak GPU memory | Relative work |
-|---|---:|---:|---:|---:|---:|
-| Direct | | | | | |
-| ID T=1 | | | | | |
-| ID T=2 | | | | | |
-| ID T=3 | | | | | |
-| CFGD | | | | | |
-| SyncTweedies | | | | | 1x synchronized-chart work |
-| Overlap-guided | | | | | 2x model evaluations plus backward pass |
-| Consensus equilibrium | | | | | 2x synchronized-chart work |
-
-Use median and interquartile range across samples. Do not compare raw wall time from
-different GPU models without normalization.
-
-## Table 4: InfiniteDiffusion Depth Ablation
-
-This isolates the effect of recursive depth.
-
-| Depth | Split steps | Spatial quality summary | Temporal quality summary | Model evaluations | Runtime |
-|---:|---|---:|---:|---:|---:|
-| 1 | none | | | | |
-| 2 | 9 | | | | |
-| 3 | 6, 12 | | | | |
-
-Required conclusions:
-
-1. Whether increasing T improves overlap continuity.
-2. Whether increasing T degrades spectra, distributions, extremes, or temporal change.
-3. Whether any quality change justifies the growth in model evaluations.
-
-## Table 5: Base Model Versus Tiling
-
-This table answers whether the principal limitation comes from the denoiser or the
-infinite-field architecture.
-
-| Comparison | SR_E change | SR_div change | SR_vort change | W1 change | Tail change | Interpretation |
-|---|---:|---:|---:|---:|---:|---|
-| Direct -> ID T=1 | | | | | | Cost of InfiniteDiffusion tiling |
-| Direct -> CFGD | | | | | | Cost or benefit of chart consensus |
-| Direct -> best synchronized method | | | | | | Best observed architecture effect |
-| ERA5 floor -> Direct | | | | | | Base-denoiser quality gap |
-
-If Direct is already far from ERA5 and architecture deltas are small, retraining the
-base model is the priority. If Direct is good but infinite-field methods are poor,
-synchronization is the priority.
-
-## Table 6: Synchronization Rule Ablation
-
-Compare methods with the same canonical chart geometry.
-
-| Method | Synchronized quantity | Exact merge? | Extra gradient? | Consensus rounds | Spatial rank | Temporal rank | Cost rank |
-|---|---|---|---|---:|---:|---:|---:|
-| CFGD | EDM direction/shared chart state | Yes | No | 1 | | | |
-| SyncTweedies | Predicted clean field | Yes | No | 1 | | | |
-| Overlap-guided | No exact merge; overlap loss | No | Yes | 1 | | | |
-| Consensus equilibrium | Clean proposal plus disagreement state | Yes | No | 2 | | | |
-
-This determines whether quality depends on synchronizing noisy states, clean estimates,
-soft gradients, or corrected multi-round consensus.
-
-## Table 7: Robustness and Uncertainty
-
-Aggregate means alone are insufficient for a final paper claim.
-
-| Breakdown | Required output |
+| Required run | Purpose |
 |---|---|
-| Season | Metric values for January, April, July, and October |
-| Pressure level | Metric values or distributions by level |
-| Condition | Paired method differences at each matched timestamp |
-| Seed | Variation across the two existing seeds |
-| Confidence interval | Paired bootstrap 95% interval for each method minus ID T=1 |
+| Original checkpoint: direct tiles versus T=1 | Existing base-versus-tiling result |
+| Multiyear checkpoint: direct tiles versus T=1 | Determine whether improved training data closes the ERA5 gap |
 
-The primary significance test is a paired bootstrap over matched conditions. A method is
-an improvement only when its interval excludes zero in the favorable direction on the
-preselected primary metrics.
-
-## Table 8: Procedural Guarantees
-
-| Method | Deterministic repeat | Order-independent query | Crop consistency | Seamless overlap | Bounded random-access work | Test |
-|---|---|---|---|---|---|---|
-| ID T=1 | | | | | | |
-| ID T=2 | | | | | | |
-| ID T=3 | | | | | | |
-| CFGD | | | | | | |
-| SyncTweedies | | | | | | |
-| Overlap-guided | | | | | | |
-| Consensus equilibrium | | | | | | |
-
-Each entry must be backed by a mechanical test, not visual inspection. At minimum:
-
-1. Repeating an identical query returns exactly identical values.
-2. Querying A then B equals querying B then A.
-3. A crop generated alone equals the same crop taken from a larger query.
-4. Work for a fixed-size query does not depend on absolute coordinates or prior queries.
-
-## Table 9: Retrained-Model Follow-Up
-
-Run this only after a better multiyear base checkpoint exists.
-
-| Checkpoint | Direct | ID T=1 | Best alternative | ERA5 floor |
-|---|---:|---:|---:|---:|
-| Original one-year checkpoint | | | | |
-| Multiyear checkpoint | | | | |
-
-Repeat the primary spatial and temporal metrics. This separates gains from better
-training data from gains caused by the infinite-field architecture.
-
-## Decision Rules
-
-1. Select primary metrics before reading the new results: SR_E, SR_div, SR_vort,
-   conditional W1, SR_time, and dispersion log-MSD RMSE.
-2. Reject an architecture that improves seams only by over-smoothing temporal or spatial
-   spectra.
-3. Prefer the simplest method within uncertainty of the best method.
-4. Report architecture quality and computational cost together.
-5. Treat the current synchronized-method settings as pilots until guidance strength,
-   consensus rounds, and relaxation have small held-out ablations.
+The same spatial and temporal metrics must be used for both checkpoints. This separates
+improvements caused by base-model training from improvements caused by
+InfiniteDiffusion.
