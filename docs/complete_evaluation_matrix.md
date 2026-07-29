@@ -18,7 +18,8 @@ multiyear retrained checkpoint is included.
   12 UTC.
 - Conditional generators: 56 matched conditions and two seeds, giving 112 samples per
   method.
-- BLE-VAE: 112 independent latent samples. It is unconditional and therefore has no
+- BLE-VAE: 112 independent latent samples. The benchmarked decoder is unconditional
+  with respect to physical location, date, season, and hour, so it has no
   condition-matched score.
 - Common evaluation region: 16x16 cells centered near San Francisco at 50 km spacing.
 - Vertical range: 60-130 hPa using the same interpolation for ERA5 and every conditional
