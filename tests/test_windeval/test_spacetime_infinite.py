@@ -177,3 +177,19 @@ def test_segmented_heun_matches_unsplit_trajectory_without_blending() -> None:
     )
 
     assert torch.equal(full, segmented)
+
+
+def test_fixed_domain_tile_scaling_profiles_have_expected_final_windows() -> None:
+    for window, stride, expected in ((64, 32, 9), (32, 16, 25), (16, 8, 81)):
+        field = InfiniteSpaceTimeDiffusion(
+            _IdentitySampler(),
+            grid=SpaceTimeGrid(),
+            window=window,
+            stride=stride,
+            time_stride=2,
+            seed=3,
+            outer_depth=1,
+            cache_bytes=64 * 1024 * 1024,
+        )
+        _ = field.materialize(0, 1, 32, 96, 32, 96)
+        assert field.phase_window_calls["initial"] == expected
