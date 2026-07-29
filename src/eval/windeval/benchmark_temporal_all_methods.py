@@ -137,7 +137,7 @@ def _write_report(rows: dict[str, dict], output: Path) -> None:
         "independent seasonal self-split floor.",
         "",
         "Direct base concatenates six independently sampled four-hour blocks. "
-        "InfiniteDiffusion and CFGD generate each full 24-hour query as one lazy field. "
+        "Every other conditional generator produces each full 24-hour query as one field. "
         "BLE-VAE is listed as N/A because its nine decoder slices have no established "
         "physical hourly spacing; assigning one would make the temporal comparison arbitrary.",
         "",
