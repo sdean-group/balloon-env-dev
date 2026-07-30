@@ -215,6 +215,49 @@ def _fmt(value: float) -> str:
     return "N/A" if not np.isfinite(value) else f"{value:.4f}"
 
 
+def _validate_checkpoint_control(configs: dict[int, dict]) -> str:
+    checkpoints = {config["checkpoint"] for config in configs.values()}
+    if len(checkpoints) == 1:
+        return (
+            "**Checkpoint control:** all rows use the same checkpoint, which was trained "
+            "on 64x64 crops. The 32x32 and 16x16 rows are inference-only distribution-shift "
+            "pilots and must not be interpreted as a causal tile-size comparison."
+        )
+
+    expected_crops = {
+        count: PROFILES[count].window
+        for count in PROFILES
+    }
+    observed_crops = {
+        count: int(config.get("checkpoint_training_crop", -1))
+        for count, config in configs.items()
+    }
+    mismatches = {
+        count: (expected_crops[count], observed_crops[count])
+        for count in expected_crops
+        if observed_crops[count] != expected_crops[count]
+    }
+    if mismatches:
+        raise ValueError(f"mixed checkpoints are not crop matched: {mismatches}")
+
+    recipes = []
+    for count in sorted(configs):
+        recipe = dict(configs[count].get("checkpoint_training_recipe", {}))
+        recipe.pop("data_path", None)
+        recipes.append(recipe)
+    baseline = recipes[0]
+    for count, recipe in zip(sorted(configs)[1:], recipes[1:]):
+        if recipe != baseline:
+            raise ValueError(
+                f"{count}-core checkpoint has a different recorded training recipe"
+            )
+    return (
+        "**Checkpoint control:** every row uses a separate checkpoint trained at its "
+        "inference-window size (64x64, 32x32, or 16x16). Recorded architecture, optimizer, "
+        "batch size, update count, conditioning, and seed are identical."
+    )
+
+
 def _plot_runtime(performance: dict[int, dict], output: Path) -> None:
     tiles = np.asarray(sorted(performance))
     median = np.asarray([performance[n]["median seconds"] for n in tiles])
@@ -411,15 +454,7 @@ def _write_report(
         "overlap halos are required, the actual final denoiser-window counts are 9/25/81.",
         "",
     ]
-    checkpoints = {config["checkpoint"] for config in configs.values()}
-    if len(checkpoints) == 1:
-        lines += [
-            "**Checkpoint control:** all rows use the same checkpoint, which was trained "
-            "on 64x64 crops. The 32x32 and 16x16 rows are inference-only distribution-shift "
-            "pilots and must be repeated with crop-matched models before attributing changes "
-            "solely to tile size.",
-            "",
-        ]
+    lines += [_validate_checkpoint_control(configs), ""]
     lines += [
         "## Geometry and inference cost",
         "",

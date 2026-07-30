@@ -293,6 +293,7 @@ class SpaceTimeSampler:
         self.device = torch.device(device)
         ck = torch.load(Path(ckpt_path), map_location=self.device, weights_only=False)
         cfg = ck["cfg"]
+        self.cfg = dict(cfg)
         st = ck["stats"]
         self.stats = NormStats(st["mean_u"], st["std_u"], st["mean_v"], st["std_v"], st["levels"])
         self.n_levels = self.stats.n_levels

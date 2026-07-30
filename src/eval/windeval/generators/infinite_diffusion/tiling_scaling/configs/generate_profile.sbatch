@@ -33,6 +33,11 @@ if [[ -n "${SPLIT_STEPS:-}" ]]; then
   SPLIT_ARGS=(--split-steps "${values[@]}")
 fi
 
+CROP_MATCH_ARGS=()
+if [[ "${REQUIRE_CROP_MATCH:-0}" == "1" ]]; then
+  CROP_MATCH_ARGS=(--require-crop-match)
+fi
+
 PYTHONPATH="$REPO/src/eval${PYTHONPATH:+:$PYTHONPATH}" \
 "$PY" -m windeval.generators.infinite_diffusion.tiling_scaling.generate \
   --checkpoint "${CHECKPOINT:?set CHECKPOINT}" \
@@ -44,4 +49,5 @@ PYTHONPATH="$REPO/src/eval${PYTHONPATH:+:$PYTHONPATH}" \
   "${SPLIT_ARGS[@]}" \
   --num-seeds "${NUM_SEEDS:-2}" \
   --cache-gb "${CACHE_GB:-2}" \
+  "${CROP_MATCH_ARGS[@]}" \
   "${FILTER_ARGS[@]}"

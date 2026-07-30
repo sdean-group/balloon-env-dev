@@ -51,6 +51,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--hours", type=int, nargs="+", default=list(HOURS))
     parser.add_argument("--query-origin", type=int, default=32)
     parser.add_argument("--cache-gb", type=float, default=2.0)
+    parser.add_argument(
+        "--require-crop-match",
+        action="store_true",
+        help="reject checkpoints not trained at this profile's model-window size",
+    )
     args = parser.parse_args(argv)
     profile = profile_for(args.core_tiles)
     if args.outer_depth == 1:
@@ -67,6 +72,12 @@ def main(argv: list[str] | None = None) -> None:
     sampler = SpaceTimeSampler(
         args.checkpoint, num_steps=args.num_steps, device=args.device, use_ema=True
     )
+    training_crop = int(sampler.cfg.get("crop", -1))
+    if args.require_crop_match and training_crop != profile.window:
+        raise ValueError(
+            f"{profile.core_tiles}-core profile uses {profile.window}x{profile.window} "
+            f"model windows, but checkpoint records training crop {training_crop}"
+        )
     conditions = [
         (month, day, hour, seed)
         for month in args.months
@@ -85,6 +96,31 @@ def main(argv: list[str] | None = None) -> None:
         "expected_final_windows_including_halo": profile.expected_final_windows,
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "checkpoint_step": sampler.step,
+        "checkpoint_training_crop": training_crop,
+        "checkpoint_training_recipe": {
+            key: sampler.cfg.get(key)
+            for key in (
+                "data_path",
+                "levels",
+                "spacetime",
+                "conditional",
+                "n_frames",
+                "frame_stride",
+                "temporal_kernel",
+                "model_channels",
+                "channel_mult",
+                "num_res_blocks",
+                "attn_resolutions",
+                "sigma_data",
+                "batch_size",
+                "lr",
+                "ema_decay",
+                "n_steps",
+                "warmup_steps",
+                "seed",
+            )
+        },
+        "crop_match_required": args.require_crop_match,
         "num_steps": args.num_steps,
         "outer_depth": args.outer_depth,
         "split_steps": split_steps,

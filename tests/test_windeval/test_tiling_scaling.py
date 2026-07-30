@@ -54,3 +54,11 @@ def test_correlation_length_distinguishes_smooth_and_white_fields() -> None:
     white_length, _ = coherence_length_km(white_u, white_v)
     smooth_length, _ = coherence_length_km(smooth_u, smooth_v)
     assert smooth_length > white_length
+
+
+def test_profiles_map_core_counts_to_training_crop_sizes() -> None:
+    assert {count: profile.window for count, profile in PROFILES.items()} == {
+        4: 64,
+        16: 32,
+        64: 16,
+    }

@@ -120,3 +120,14 @@ scoring job requests CPU and memory on a Dean node but does not request a GPU.
 Use a distinct `EXPERIMENT`, such as `crop_matched`, for the matched-checkpoint
 comparison. Existing output directories reject configuration changes instead of mixing
 samples from different checkpoints or protocols.
+
+## Submit the crop-matched experiment
+
+The complete resumable workflow, data preflight, storage estimate, monitoring commands,
+and interpretation rules are in:
+
+`src/eval/windeval/generators/infinite_diffusion/tiling_scaling/training/README.md`
+
+The one-command launcher trains crop-32 and crop-16 models sequentially, reuses the original
+crop-64 checkpoint, runs the same 112-condition benchmark, and enforces the checkpoint-to-
+window mapping before generation.

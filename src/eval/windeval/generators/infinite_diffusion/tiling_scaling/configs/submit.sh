@@ -11,6 +11,9 @@ CHECKPOINT_16="${CHECKPOINT_16:-$CHECKPOINT}"
 CHECKPOINT_64="${CHECKPOINT_64:-$CHECKPOINT}"
 REFERENCE="${REFERENCE:-$DATA_ROOT/era5/era5_heldout_conditional.zarr}"
 EXPERIMENT="${EXPERIMENT:-same_checkpoint}"
+UPSTREAM_DEPENDENCY="${UPSTREAM_DEPENDENCY:-}"
+NODELIST="${NODELIST:-dean-compute-02}"
+REQUIRE_CROP_MATCH="${REQUIRE_CROP_MATCH:-0}"
 ROOT="$DATA_ROOT/outputs/idiff_tiling_scaling/$EXPERIMENT"
 RUN_4="$ROOT/tiles_4"
 RUN_16="$ROOT/tiles_16"
@@ -36,14 +39,14 @@ submit_generation() {
     dependency_args=(--dependency="afterok:$dependency")
   fi
   CORE_TILES="$count" CHECKPOINT="$checkpoint" OUTPUT_DIR="$output" \
-  PYTHON="$PYTHON" REPO="$REPO" \
-  sbatch --parsable --nodes=1 --nodelist='dean-compute-[01-02]' \
+  PYTHON="$PYTHON" REPO="$REPO" REQUIRE_CROP_MATCH="$REQUIRE_CROP_MATCH" \
+  sbatch --parsable --nodes=1 --nodelist="$NODELIST" \
     --job-name="tiles-$count" "${dependency_args[@]}" \
     "$SBATCH_DIR/generate_profile.sbatch"
 }
 
 # Serialize the GPU work. This prevents the sweep from occupying multiple group GPUs.
-job4=$(submit_generation 4 "$CHECKPOINT_4" "$RUN_4")
+job4=$(submit_generation 4 "$CHECKPOINT_4" "$RUN_4" "$UPSTREAM_DEPENDENCY")
 job4="${job4%%;*}"
 job16=$(submit_generation 16 "$CHECKPOINT_16" "$RUN_16" "$job4")
 job16="${job16%%;*}"
@@ -53,7 +56,7 @@ job64="${job64%%;*}"
 bench=$(
   REFERENCE="$REFERENCE" RUN_4="$RUN_4" RUN_16="$RUN_16" RUN_64="$RUN_64" \
   OUTPUT_DIR="$REPORT" PYTHON="$PYTHON" REPO="$REPO" \
-  sbatch --parsable --nodes=1 --nodelist='dean-compute-[01-02]' \
+  sbatch --parsable --nodes=1 --nodelist="$NODELIST" \
     --dependency="afterok:$job64" \
     "$SBATCH_DIR/benchmark.sbatch"
 )
