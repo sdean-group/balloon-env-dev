@@ -46,7 +46,11 @@ echo "[remote] creating incoming directory"
 ssh "$REMOTE" "mkdir -p '$REMOTE_ROOT/incoming' '$REMOTE_ROOT/era5'"
 
 echo "[upload] resumable transfer to $REMOTE:$REMOTE_ARCHIVE"
-rsync -ah --partial --info=progress2 "$ARCHIVE" "$REMOTE:$REMOTE_ARCHIVE"
+progress_args=(--progress)
+if rsync --help 2>&1 | grep -q -- '--info'; then
+  progress_args=(--info=progress2)
+fi
+rsync -ah --partial "${progress_args[@]}" "$ARCHIVE" "$REMOTE:$REMOTE_ARCHIVE"
 
 echo "[verify] writing SHA-256 sidecar for compute-node verification"
 local_sha="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
