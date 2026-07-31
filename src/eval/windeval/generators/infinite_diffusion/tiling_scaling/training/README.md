@@ -88,6 +88,44 @@ bash \
   src/eval/windeval/generators/infinite_diffusion/tiling_scaling/training/configs/submit_crop_matched.sh
 ```
 
+## Start from a tar archive on a Mac
+
+Do not use a path ending in `.download`; wait until the browser has finalized the file.
+Then, on the Mac:
+
+```bash
+cd "/Users/rohanshankar/Downloads/Balloon Research/wind-idiff-checkpoint-eval"
+
+bash \
+  src/eval/windeval/generators/infinite_diffusion/tiling_scaling/training/upload_archive_from_mac.sh \
+  "$HOME/Downloads/era5_2023.zarr.tar"
+```
+
+The uploader:
+
+- fully reads the tar index to detect an incomplete archive;
+- rejects absolute paths, parent traversal, and archive links;
+- requires evidence of a Zarr store;
+- transfers resumably with `rsync --partial`;
+- writes a SHA-256 sidecar that the extraction job verifies on the compute node.
+
+After the code is present in `~/balloon-env-dev-code`, submit the entire extraction,
+training, generation, and scoring chain from Unicorn:
+
+```bash
+cd ~/balloon-env-dev-code
+
+PYTHON="$HOME/envs/idiff-eval-titan/bin/python" \
+ARCHIVE="/share/dean/$USER/balloon-research/incoming/era5_2023.zarr.tar" \
+bash \
+  src/eval/windeval/generators/infinite_diffusion/tiling_scaling/training/configs/submit_from_archive.sh
+```
+
+This command returns immediately after adding all jobs to Slurm. Extraction runs on a
+Dean compute node rather than the shared login node. It installs the Zarr atomically, then
+the existing preflight validates its variables, dimensions, year, and held-out-day
+exclusions before either training job can start.
+
 The submission creates this dependency chain:
 
 ```text
