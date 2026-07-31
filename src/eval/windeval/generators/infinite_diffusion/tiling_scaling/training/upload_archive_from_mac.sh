@@ -6,6 +6,17 @@ ARCHIVE="${1:-$HOME/Downloads/era5_2023.zarr.tar}"
 REMOTE="${REMOTE:-unicorn}"
 REMOTE_ROOT="${REMOTE_ROOT:-/share/dean/rs2656/balloon-research}"
 REMOTE_ARCHIVE="$REMOTE_ROOT/incoming/era5_2023.zarr.tar"
+CONTROL_DIR=""
+SIDECAR=""
+
+cleanup() {
+  if [[ -n "$CONTROL_DIR" && -S "$CONTROL_DIR/ssh" ]]; then
+    ssh -S "$CONTROL_DIR/ssh" -O exit "$REMOTE" >/dev/null 2>&1 || true
+  fi
+  [[ -n "$CONTROL_DIR" ]] && rm -rf "$CONTROL_DIR"
+  [[ -n "$SIDECAR" ]] && rm -f "$SIDECAR"
+}
+trap cleanup EXIT
 
 test -f "$ARCHIVE" || {
   echo "Archive not found: $ARCHIVE" >&2
@@ -42,24 +53,30 @@ if markers == 0:
 print("archive structure check passed")
 PY
 
+CONTROL_DIR="$(mktemp -d /tmp/idiff-upload.XXXXXX)"
+echo "[remote] opening one persistent SSH connection"
+ssh -M -S "$CONTROL_DIR/ssh" -o ControlPersist=600 -fN "$REMOTE"
+
 echo "[remote] creating incoming directory"
-ssh "$REMOTE" "mkdir -p '$REMOTE_ROOT/incoming' '$REMOTE_ROOT/era5'"
+ssh -S "$CONTROL_DIR/ssh" "$REMOTE" \
+  "mkdir -p '$REMOTE_ROOT/incoming' '$REMOTE_ROOT/era5'"
 
 echo "[upload] resumable transfer to $REMOTE:$REMOTE_ARCHIVE"
 progress_args=(--progress)
 if rsync --help 2>&1 | grep -q -- '--info'; then
   progress_args=(--info=progress2)
 fi
-rsync -ah --partial "${progress_args[@]}" "$ARCHIVE" "$REMOTE:$REMOTE_ARCHIVE"
+rsync -ah --partial -e "ssh -S $CONTROL_DIR/ssh" \
+  "${progress_args[@]}" "$ARCHIVE" "$REMOTE:$REMOTE_ARCHIVE"
 
 echo "[verify] writing SHA-256 sidecar for compute-node verification"
 local_sha="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
-sidecar="$(mktemp)"
-trap 'rm -f "$sidecar"' EXIT
-printf '%s  %s\n' "$local_sha" "$(basename "$REMOTE_ARCHIVE")" > "$sidecar"
-rsync -ah "$sidecar" "$REMOTE:$REMOTE_ARCHIVE.sha256"
+SIDECAR="$(mktemp)"
+printf '%s  %s\n' "$local_sha" "$(basename "$REMOTE_ARCHIVE")" > "$SIDECAR"
+rsync -ah -e "ssh -S $CONTROL_DIR/ssh" \
+  "$SIDECAR" "$REMOTE:$REMOTE_ARCHIVE.sha256"
 echo "SHA-256: $local_sha"
 
 echo
 echo "Upload complete. Remote archive:"
-ssh "$REMOTE" "ls -lh '$REMOTE_ARCHIVE'"
+ssh -S "$CONTROL_DIR/ssh" "$REMOTE" "ls -lh '$REMOTE_ARCHIVE' '$REMOTE_ARCHIVE.sha256'"
