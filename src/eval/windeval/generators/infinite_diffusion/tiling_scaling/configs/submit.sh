@@ -24,8 +24,10 @@ SBATCH_DIR="src/eval/windeval/generators/infinite_diffusion/tiling_scaling/confi
 cd "$REPO"
 test -x "$PYTHON"
 test -f "$CHECKPOINT_4"
-test -f "$CHECKPOINT_16"
-test -f "$CHECKPOINT_64"
+if [[ -z "$UPSTREAM_DEPENDENCY" ]]; then
+  test -f "$CHECKPOINT_16"
+  test -f "$CHECKPOINT_64"
+fi
 test -d "$REFERENCE"
 mkdir -p "$ROOT"
 
