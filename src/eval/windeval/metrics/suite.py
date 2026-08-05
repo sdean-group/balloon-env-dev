@@ -20,6 +20,7 @@ import numpy as np
 from .spectra import spatial_spectral_suite
 from .shear import shear_w1
 from .distributions import marginal_w1, extreme_quantile_error, conditional_w1
+from .structure import structure_suite
 from .temporal import has_time, temporal_spectral_residual, dispersion_compare
 
 # name -> (better, unit/target note)
@@ -36,6 +37,22 @@ METRIC_INFO = {
     "tail err 0.1% (m/s)":     ("lower", "|q_pred−q_ref| at 0.1/99.9%"),
     "W1 cond (m/s)":           ("lower", "seed-pooled per-level W1 at fixed conditions; "
                                          "conditional rows use (location, month, hour)"),
+    "W1 cond u (m/s)":         ("lower", "conditional W1 for u only; levels and fixed "
+                                         "(location, month, hour) conditions averaged"),
+    "W1 cond v (m/s)":         ("lower", "conditional W1 for v only; levels and fixed "
+                                         "(location, month, hour) conditions averaged"),
+    "opp-wind frac":           ("≈ref",  "fraction of columns with an opposing (>90°, "
+                                         "both ≥5 m/s) level pair; ERA5 value in footnote"),
+    "opp-wind err":            ("lower", "|frac_pred − frac_ref| — vertical decoupling, "
+                                         "the basis of balloon station-keeping"),
+    "W1 speed (m/s)":          ("lower", "per-level marginal W1 of |V|, level-averaged"),
+    "jet speed err 99% (m/s)": ("lower", "|q_pred−q_ref| at the 99th |V| percentile"),
+    "jet speed err 99.9% (m/s)": ("lower", "same at 99.9% — jet-core intensity"),
+    "jet area ratio":          ("≈1*",   "mean area of own-q95 |V| components, pred/ref. "
+                                         "*PROVISIONAL: floor 1.42 — component size swings "
+                                         "with the synoptic situation, so do not score it"),
+    "jet elong ratio":         ("≈1",    "mean elongation of those components, pred/ref; "
+                                         "estimator is tight (±0.05), floor ≈1.17"),
     "SR_time":                 ("lower", "log temporal-PSD RMSE vs ref"),
     "disp log-MSD RMSE":       ("lower", "tracer mean-square-displacement curve vs ref"),
     "final spread ratio":      ("≈1",    "tracer final position spread, pred/ref"),
@@ -62,6 +79,9 @@ def run_suite(pred_ds, ref_ds, *, dz=None, seed_datasets=None,
     scalars.update(m)
     detail["marginals"] = det
     scalars.update(extreme_quantile_error(pred_ds, ref_ds))
+
+    # structure & vertical realism (own common window; NaN when the level stack differs)
+    scalars.update(structure_suite(pred_ds, ref_ds))
 
     if seed_datasets is not None:
         scalars.update(conditional_w1(seed_datasets, ref_ds))

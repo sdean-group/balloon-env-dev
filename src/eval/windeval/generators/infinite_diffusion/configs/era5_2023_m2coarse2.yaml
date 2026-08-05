@@ -1,0 +1,80 @@
+# Phase-5b-2 COARSE-CONDITIONED spacetime model — RESIDUAL parameterization.
+#
+# Supersedes era5_2023_m2coarse.yaml (job 1021, killed at step 7.1k). Same data, same
+# architecture, same optimizer, same seed, same 300k schedule as the m2cond 300k baseline.
+# The three changes below are all one idea — point the diffusion at the band the
+# conditioner does not already supply — plus one sampling-time knob that is off by default.
+#
+# WHY (measured 2026-07-30 on the held-out reference, factor 8 / 2deg):
+#   bilinear upsampling of the coarse field already explains 97.4% of the field variance;
+#   the residual has std 0.139 in normalised units.
+#   With sigma_data=1 and EDM's log sigma ~ N(-1.2, 1.2^2), P(sigma > 0.139) = 0.74.
+#   So ~3/4 of training steps were adding noise that swamps everything the conditioner
+#   had not already given away — at those steps the optimal denoiser is literally "return
+#   the upsampled coarse field", and the step exerts no pressure toward fine structure.
+#   Rescaling the residual to unit variance moves the WHOLE tuned EDM schedule onto the
+#   2.6% of variance that is actually unknown, without retuning sigma_min/max/P_mean.
+#   Corollary that makes the experiment safer: "predict zero" is now exactly the
+#   `coarse upsampled` control row, so the model starts at the bar it has to clear.
+#
+# Variance explained by upsampling, by factor (same measurement):
+#   2x (0.5deg) 99.9% | 4x (1.0deg) 99.4% | 8x (2.0deg) 97.4% | 16x (4.0deg) 92.4%
+#   -> 8x is kept: it leaves the most measurable room while staying a plausible
+#      forecast resolution. The realistic deployment factor (4x, GFS-ish) leaves so
+#      little variance that the model's whole value there is spectral/textural.
+#
+# EVALUATION IS ASYMMETRIC AND MUST SAY SO: this model receives synoptic information the
+# unconditional rows must invent. Its mandatory companion baseline is plain bilinear
+# UPSAMPLING of the same coarse field. Pre-registered success criterion (do not move it):
+# beat `coarse upsampled` on the SPECTRAL rows — SR_E 1.74, SR_div 1.70, SR_vort 1.82,
+# L_eff 481 km — without degrading W1 u 1.93, tail 0.1% 5.91, W1 speed 0.19,
+# opp-wind err 0.025. W1_cond is meaningless for coarse rows (it degenerates to
+# reconstruction error on the same days).
+#
+# Launch (GPU is otherwise idle while the 4-yr download runs on CPU):
+#   CONFIG=src/eval/windeval/generators/infinite_diffusion/configs/era5_2023_m2coarse2.yaml \
+#     sbatch --gres=gpu:gpu48:1 --mem=48G -J idiff-m2coarse2 \
+#     src/eval/windeval/generators/infinite_diffusion/configs/train_temporal.sbatch
+data:
+  data_path: src/eval/windeval/data/era5_2023.zarr
+  crop: 64
+  levels: [49, 66]
+
+spacetime: true
+conditional: true
+coarse_factor: 8                  # 64 -> 8x8 cells @ 2deg (~200 km)
+coarse_residual: true             # diffuse (x - upsample(coarse)) / coarse_scale
+coarse_scale: 0.0                 # 0 = measure from the training set at run start
+                                  # (expected ~0.14; logged and stored in the checkpoint)
+coarse_dropout: 0.1               # 10% of steps see no coarse field (flag channel marks
+                                  # it) -> an unconditional branch exists, so
+                                  # classifier-free guidance is available at SAMPLING
+                                  # time. guidance=1 (default) == ordinary conditional
+                                  # sampling, so this cannot silently change the row.
+n_frames: 4
+frame_stride: 1
+temporal_kernel: 3
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  sigma_data: 1.0                 # stays 1.0 BECAUSE the residual is rescaled to unit
+                                  # variance — equivalent to sigma_data=0.14 on the raw
+                                  # residual, but leaves the sampler's sigma range alone
+
+train:
+  batch_size: 16                  # gpu48 slice (admin: stay off the gpu96 slices)
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 300000                 # matches the m2cond baseline exactly
+  warmup_steps: 1000
+  num_workers: 4
+  out_dir: runs/idiff_m2coarse2
+  ckpt_every: 1000
+  snapshot_every: 10000           # early read at 10-50k; the conditional task converges
+                                  # faster and the residual task should converge faster still
+  log_every: 100
+  device: cuda                    # never `auto` — it silently falls back to CPU
+  seed: 0

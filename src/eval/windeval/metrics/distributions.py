@@ -69,15 +69,21 @@ def conditional_w1(seed_datasets, ref_ds) -> dict:
     """
     seed_list = list(seed_datasets)
     if not seed_list:
-        return {"W1 cond (m/s)": np.nan}
-    w1 = []
+        return {"W1 cond u (m/s)": np.nan,
+                "W1 cond v (m/s)": np.nan,
+                "W1 cond (m/s)": np.nan}
+    by_var = {}
     for var in ("u", "v"):
         ref_lv = _per_level_values(ref_ds, var)
         nl = len(ref_lv)
+        w1 = []
         for l in range(nl):
             pooled = np.concatenate([d[var].values[:, l].ravel() for d in seed_list])
             w1.append(wasserstein1(pooled, ref_lv[l]))
-    return {"W1 cond (m/s)": float(np.mean(w1))}
+        by_var[var] = float(np.mean(w1))
+    return {"W1 cond u (m/s)": by_var["u"],
+            "W1 cond v (m/s)": by_var["v"],
+            "W1 cond (m/s)": float(np.mean(list(by_var.values())))}
 
 
 def conditional_w1_grouped(groups) -> dict:
@@ -85,5 +91,7 @@ def conditional_w1_grouped(groups) -> dict:
 
     `groups`: iterable of (seed_datasets, ref_ds_at_condition) pairs, one per condition.
     """
-    vals = [conditional_w1(seeds, ref)["W1 cond (m/s)"] for seeds, ref in groups]
-    return {"W1 cond (m/s)": float(np.mean(vals)) if vals else np.nan}
+    rows = [conditional_w1(seeds, ref) for seeds, ref in groups]
+    keys = ("W1 cond u (m/s)", "W1 cond v (m/s)", "W1 cond (m/s)")
+    return {key: float(np.mean([row[key] for row in rows])) if rows else np.nan
+            for key in keys}

@@ -22,6 +22,7 @@ netcdf4 = ">=1.7.4,<2"
 zarr = ">=3"
 cfgrib = "*"
 eccodes = "*"
+numba = ">=0.60"
 
 [feature.dev.dependencies]
 pytest = ">=8.0.0"
@@ -65,3 +66,6 @@ viz = ["viz"]
 gp = ["gp"]
 rl = ["rl"]
 diffusion = ["diffusion"]
+
+[pypi-dependencies]
+opensimplex = ">=0.4.5"

@@ -4,7 +4,8 @@
 #SBATCH --gres=gpu:gpu48:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --time=7-00:00:00
+#SBATCH --signal=B:TERM@180
 #
 # Train a TEMPORAL InfiniteDiffusion denoiser (Phase 4d) on Kahan — M3 (autoregressive) or
 # M2 (joint spacetime). Parameterized: pass CONFIG via env (defaults to M3). The job name (-J)
@@ -43,6 +44,30 @@ PY="$REPO/.venv-idiff/bin/python"
 CONFIG="${CONFIG:-src/eval/windeval/generators/infinite_diffusion/configs/era5_temporal_m3.yaml}"
 export PYTHONUNBUFFERED=1   # stream prints live to the .out file (don't block-buffer)
 
-echo "[sbatch] training with CONFIG=$CONFIG"
+echo "[sbatch] training with CONFIG=$CONFIG SET=${SET:-}"
+# WALL LIMIT / CHAINING (corrected 2026-07-29 — the old note here was WRONG).
+# The former trap called `sbatch` to resubmit itself. That can NEVER work: SLURM client
+# binaries are not installed on the compute node at all (`/usr/bin/sbatch` exists only on
+# kahanctrl), so the call died with "command not found" and the chain ended silently —
+# exactly how the ERA5 download lost ~20 h on Jul 28. Believed-working-but-untested.
+# The partition is MaxTime=UNLIMITED, so the fix is simply to ask for the time you need:
+# --time is now 7 days (a 300k-step 4-yr run is ~31 h at 2.7 it/s; 500k is ~51 h — BOTH
+# would have died under the old 24 h limit). For extra safety, chain FROM THE LOGIN NODE:
+#   J=$(CONFIG=... sbatch --parsable --gres=gpu:gpu48:1 -J name .../train_temporal.sbatch)
+#   CONFIG=... sbatch --dependency=afterany:$J --gres=gpu:gpu48:1 -J name .../train_temporal.sbatch
+# (resume=true makes a spurious extra run harmless — it just continues from latest.pt).
+# Stop a chain with:  touch runs/STOP_RESUBMIT && scancel <jobid>
+on_term() {
+  echo "[sbatch] TERM received (wall limit or scancel) at $(date '+%F %T')."
+  echo "[sbatch] NOT self-resubmitting: sbatch does not exist on compute nodes."
+  echo "[sbatch] Resume from kahanctrl; training continues from latest.pt (resume=true)."
+  exit 143
+}
+trap on_term TERM
+
 # STANDALONE entry (not `-m src.eval...`) so we don't drag in the jax/gym harness stack.
-"$PY" src/eval/windeval/generators/infinite_diffusion/train.py --config "$CONFIG"
+# Run in background + wait so the TERM trap can fire mid-training (bash defers traps
+# while a foreground child runs).
+"$PY" src/eval/windeval/generators/infinite_diffusion/train.py --config "$CONFIG" \
+  ${SET:+--set $SET} &
+wait $!

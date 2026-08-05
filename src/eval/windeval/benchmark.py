@@ -17,6 +17,10 @@ Rows (distilled set, Shaurya 2026-07-10 — each earns its place; see changes do
                         marginal W1 *by construction* — its documented blind spot)
   phase shuffle         white noise's complement: right stats, zero structure — fires the
                         distribution metrics and brackets the diffusion failure mode
+  simplex noise         structured-noise baseline: octaved 4D OpenSimplex (the BLE wind-
+                        noise family), every knob fit on half A — see baselines.py
+  helmholtz gp          structured-noise baseline: stationary GP with a Helmholtz
+                        (curl-free + div-free) kernel, knobs fit on half A
   ble_vae               prior state of the art; the row to beat (SF-box climate caveat)
   idiff trained         the model (--ckpt)
   idiff m2cond          the conditional space-time model (--cond-ckpt), sampled at
@@ -45,6 +49,7 @@ import numpy as np
 from . import artifact
 from .reference import build_heldout, split
 from .anchors import _phase_randomize
+from .baselines import baseline_rows
 from .metrics import run_suite, tiling_penalty, climatological_dz
 from .metrics.distributions import conditional_w1_grouped
 from .metrics.suite import METRIC_INFO
@@ -59,7 +64,10 @@ COLORS = {
     "idiff trained": "#2a78d6", "idiff toy": "#1baf7a", "ble_vae": "#eda100",
     "phase shuffle": "#4a3aa7", "white noise": "#e34948",
     "kinematic toy": "#e87ba4", "time shuffled": "#eb6834",
-    "idiff m2cond": "#0ea5b7",
+    "idiff m2cond": "#0ea5b7", "idiff m2coarse": "#c2410c",
+    "coarse upsampled": "#9a8c78",
+    # CVD-checked additions (Machado-sim min ΔE vs all others: 32 / 12.7)
+    "helmholtz gp": "#3a1fdf", "simplex noise": "#2fbf66",
 }
 
 # W1_cond protocol (Shaurya 2026-07-14): a condition = (the fixed 64² center window,
@@ -70,6 +78,7 @@ COND_MONTHS = (1, 4, 7, 10)
 COND_HOURS = (0, 12)
 COND_DAYS = tuple(range(8, 15))
 COND_SEEDS = 2
+COND_CLIM_FRAMES = 14   # = COND_SEEDS × |COND_DAYS|: the unconditional rows' pool size
 
 
 def _like(ds, u, v):
@@ -155,30 +164,135 @@ def _cond_floor_groups(ref):
             for m in COND_MONTHS for h in COND_HOURS]
 
 
-def _conditional_artifacts(ckpt: str, ref, *, regen: bool, num_steps: int = 18):
+def _climatological_cond_groups(pred_ds, ref, seed: int = 0):
+    """W1_cond for an UNCONDITIONAL generator — the climatological baseline.
+
+    Such a generator's samples don't depend on (month, hour), so the honest score is its
+    single climatological pool measured against EACH condition's reference: it answers
+    "how far is climatology from the actual conditional distribution", which is exactly
+    what a conditional model must beat. These rows previously read N/A, which says "not
+    applicable" when the truth is "cannot condition" — and left the one axis noise can't
+    play on without a number to compare against (Shaurya, 2026-07-29).
+
+    Window- and sample-size-matched to the conditional protocol: the same centered 64²
+    box, and COND_CLIM_FRAMES frames per condition (= the model's 2 seeds × 7 held-out
+    days), drawn independently per condition so each carries its own sampling noise.
+    """
+    from .metrics.structure import _center
+
+    y0, x0, _, _ = _cond_window(ref)
+    p = _center(pred_ds, 64)
+    rng = np.random.default_rng(seed)
+    nt = p.sizes["time"]
+    k = min(COND_CLIM_FRAMES, nt)
+    groups = []
+    for m in COND_MONTHS:
+        for h in COND_HOURS:
+            idx = sorted(rng.choice(nt, k, replace=False))
+            groups.append(([p.isel(time=[i]) for i in idx],
+                           _cond_ref(ref, y0, x0, m, h, COND_DAYS)))
+    return groups
+
+
+def _ref_block_at(ref, y0, x0, ts):
+    """The reference's own (τ,L,64,64) u/v block at exact timestamps — the coarse source."""
+    sub = ref.sel(time=list(ts)).isel(y=slice(y0, y0 + 64), x=slice(x0, x0 + 64))
+    return sub["u"].values, sub["v"].values
+
+
+def _coarse_upsample_artifacts(ref, factor: int = 8):
+    """THE MANDATORY BASELINE for any coarse-conditioned row: bilinear upsampling of the
+    very same conditioning field, with no model at all.
+
+    A coarse-conditioned model is handed the synoptic state, so it will beat the
+    unconditional rows on almost everything — that comparison is asymmetric and proves
+    little on its own. The question that IS well posed is "what did the diffusion model
+    add inside the 2° cell it was given?", and this row is the answer's denominator: any
+    metric where the model does not beat plain upsampling is a metric where the model
+    contributed nothing. Built over exactly the same conditions/timestamps/window as the
+    model row. Deterministic, so it has 7 frames per condition (one per held-out day)
+    against the model's 14 (2 seeds × 7 days).
+    """
+    import torch
+
+    y0, x0, lat, lon = _cond_window(ref)
+    blocks, times = [], []
+    for m in COND_MONTHS:
+        for h in COND_HOURS:
+            for d in COND_DAYS:
+                ts = (np.datetime64(f"2023-{m:02d}-{d:02d}T{h:02d}", "h")
+                      + np.arange(4).astype("timedelta64[h]"))
+                us, vs = _ref_block_at(ref, y0, x0, ts)
+                f = np.stack([us, vs], axis=2)                      # (τ,L,2,H,W)
+                t_, L_, _, H_, W_ = f.shape
+                x = torch.from_numpy(f.reshape(t_, L_ * 2, H_, W_).astype("float32"))
+                lo = torch.nn.functional.avg_pool2d(x, factor)      # same operator as training
+                up = torch.nn.functional.interpolate(lo, size=(H_, W_), mode="bilinear",
+                                                     align_corners=False)
+                blocks.append(up.numpy().reshape(t_, L_, 2, H_, W_))
+                times.append(ts)
+    blocks = np.asarray(blocks, dtype="float32")
+    times = np.asarray(times)
+    levels = np.asarray(ref["level"].values)
+
+    u = blocks[:, :, :, 0].reshape(-1, len(levels), 64, 64)
+    v = blocks[:, :, :, 1].reshape(-1, len(levels), 64, 64)
+    t = times.ravel()
+    order = np.argsort(t)
+    pooled = artifact.make_field(u[order], v[order], level=levels, lat=lat, lon=lon,
+                                 time=t[order])
+
+    groups, i = [], 0
+    for m in COND_MONTHS:
+        for h in COND_HOURS:
+            seeds = [artifact.make_field(blocks[i + k][0, :, 0], blocks[i + k][0, :, 1],
+                                         level=levels, lat=lat, lon=lon)
+                     for k in range(len(COND_DAYS))]
+            groups.append((seeds, _cond_ref(ref, y0, x0, m, h, COND_DAYS)))
+            i += len(COND_DAYS)
+    return pooled, groups
+
+
+def _conditional_artifacts(ckpt: str, ref, *, regen: bool, num_steps: int = 18,
+                           s_churn: float = 0.0, cache_tag: str = "",
+                           guidance: float = 1.0, coarse_project: bool = True):
     """(pooled seed-0 block Dataset, W1_cond condition groups) for the conditional model.
 
     Samples one τ-frame block per (month, day, hour, seed) over the fixed center window.
     The pooled dataset keeps real timestamps, so the temporal metrics run on τ-frame
     segments — 3 lead hours is all a τ=4 block supports (see report caveat).
+    Non-default sampler settings (num_steps, s_churn) get their own cache file so the
+    board default (18 deterministic) and sweep variants coexist.
     """
     from .generators.infinite_diffusion.spacetime import SpaceTimeSampler
 
     y0, x0, lat, lon = _cond_window(ref)
     conds = [(m, d, h) for m in COND_MONTHS for h in COND_HOURS for d in COND_DAYS]
-    cache = DATA / "idiff_m2cond_blocks.npz"
+    tag = ("" if (num_steps == 18 and s_churn == 0)
+           else f"_s{num_steps}" + (f"_c{s_churn:g}" if s_churn else ""))
+    tag += ("" if guidance == 1.0 else f"_g{guidance:g}") + ("" if coarse_project else "_noproj")
+    if cache_tag:                       # e.g. a non-default checkpoint: cache is NOT
+        tag = f"_{cache_tag}{tag}"      # keyed by ckpt, so tag alternate checkpoints
+    cache = DATA / f"idiff_m2cond_blocks{tag}.npz"
     if regen or not cache.exists():
-        sampler = SpaceTimeSampler(ckpt, num_steps=num_steps, device=_pick_device())
+        sampler = SpaceTimeSampler(ckpt, num_steps=num_steps, s_churn=s_churn,
+                                   guidance=guidance, coarse_project=coarse_project,
+                                   device=_pick_device())
         blocks, times = [], []
         for i, (m, d, h) in enumerate(conds):
             ts = (np.datetime64(f"2023-{m:02d}-{d:02d}T{h:02d}", "h")
                   + np.arange(sampler.tau).astype("timedelta64[h]"))
+            # coarse-conditioned checkpoints are driven by the HELD-OUT reference's own
+            # block at these exact timestamps, coarsened with the training operator —
+            # i.e. "here is the forecast, produce the realised field".
+            coarse = (sampler.coarse_from_field(*_ref_block_at(ref, y0, x0, ts))
+                      if sampler.coarse_factor else None)
             for s in range(COND_SEEDS):
-                print(f"[bench] m2cond block {i * COND_SEEDS + s + 1}/"
+                print(f"[bench] {cache_tag or 'm2cond'} block {i * COND_SEEDS + s + 1}/"
                       f"{len(conds) * COND_SEEDS} (2023-{m:02d}-{d:02d} {h:02d}h "
                       f"seed {s}) …", flush=True)
                 us, vs = sampler.sample_block((64, 64), seed=i * COND_SEEDS + s,
-                                              lat=lat, lon=lon, times=ts)
+                                              lat=lat, lon=lon, times=ts, coarse=coarse)
                 blocks.append(np.stack([us, vs], axis=2))     # (τ, L, 2, H, W)
                 times.append(ts)
         np.savez(cache, blocks=np.asarray(blocks, dtype="float32"),
@@ -255,6 +369,37 @@ def _table(rows: dict[str, dict], metrics: list[str]) -> list[str]:
     return L
 
 
+def _level_hpa(ds) -> np.ndarray:
+    """Per-level pressure (hPa), for altitude-matched cross-artifact comparisons.
+
+    ERA5 model-level artifacts carry ``level_coeffs`` (hybrid A,B; p = A + B*p0);
+    pressure-level artifacts (e.g. ble_vae, levels 50-140) ARE hPa already. Index-based
+    level pairing across the two conventions compares different altitudes — match on
+    the returned pressures instead (Shaurya, 2026-07-28).
+    """
+    import json
+    lv = np.asarray(ds["level"].values, dtype=float)
+    coeffs = ds.attrs.get("level_coeffs")
+    if isinstance(coeffs, str):
+        coeffs = json.loads(coeffs)
+    p0 = 101325.0
+    if coeffs:
+        return np.array([(coeffs[str(int(l))][0] + coeffs[str(int(l))][1] * p0) / 100.0
+                         for l in lv])
+    # No coeffs: derived artifacts (anchors, baselines, sampled model blocks) inherit the
+    # frozen ERA5 model-level band as integer indices 49-66 — convert via the l137 table.
+    # Anything else (ble_vae: 50-140) is a pressure-level coordinate in hPa already.
+    if np.all(lv == np.round(lv)) and lv.min() >= 49 and lv.max() <= 66:
+        from .l137 import _AB
+        return np.array([(_AB[int(l)][0] + _AB[int(l)][1] * p0) / 100.0 for l in lv])
+    return lv
+
+
+def _match_level(ds, target_hpa: float) -> int:
+    """Index of the dataset level closest in pressure to ``target_hpa``."""
+    return int(np.argmin(np.abs(_level_hpa(ds) - target_hpa)))
+
+
 def _figures(details: dict[str, dict], datasets: dict[str, object], ref_sp) -> list[str]:
     """Report figures. Fixed entity colors; 2px lines; recessive grid; log axes."""
     import matplotlib
@@ -297,18 +442,19 @@ def _figures(details: dict[str, dict], datasets: dict[str, object], ref_sp) -> l
     # 2. marginal log-density of u at a mid level
     fig, ax = plt.subplots(figsize=(6, 4))
     lv = ref_sp.sizes["level"] // 2
-    bins = np.linspace(-60, 80, 141)
+    target_hpa = float(_level_hpa(ref_sp)[lv])   # match by PRESSURE, not level index —
+    bins = np.linspace(-60, 80, 141)             # ble_vae's levels ARE hPa (50-140)
     ax.semilogy(*_hist(ref_sp["u"].values[:, lv].ravel(), bins),
                 color=COLORS["era5 (ref)"], label="era5 (ref)", **style)
     for name, ds in datasets.items():
         if name in ("time shuffled",):
             continue                       # identical marginals to the real frames
-        l = min(lv, ds.sizes["level"] - 1)
+        l = _match_level(ds, target_hpa)
         ax.semilogy(*_hist(ds["u"].values[:, l].ravel(), bins),
                     color=COLORS.get(name, "#999"), label=name, **style)
     ax.set_xlabel("u (m/s)")
     ax.set_ylabel("density (log)")
-    ax.set_title(f"marginal of u, mid level (log tails)")
+    ax.set_title(f"marginal of u, ≈{target_hpa:.0f} hPa (log tails)")
     ax.grid(True, alpha=0.25, lw=0.5)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(fontsize=7, frameon=False)
@@ -358,12 +504,19 @@ def _hist(x, bins):
 SPATIAL_METRICS = ["SR_E", "SR_div", "SR_vort", "L_eff (km)",
                    "W1 shear u ((m/s)/km)", "W1 shear v ((m/s)/km)"]
 DIST_METRICS = ["W1 u (m/s)", "W1 v (m/s)", "tail err 1% (m/s)", "tail err 0.1% (m/s)",
-                "W1 cond (m/s)"]
+                "W1 speed (m/s)", "jet speed err 99% (m/s)", "jet speed err 99.9% (m/s)",
+                "W1 cond u (m/s)", "W1 cond v (m/s)", "W1 cond (m/s)"]
+STRUCTURE_METRICS = ["opp-wind frac", "opp-wind err",
+                     "jet area ratio", "jet elong ratio"]
 TEMPORAL_METRICS = ["SR_time", "disp log-MSD RMSE", "final spread ratio"]
 
 
 def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
-        temporal: bool = False, cond_ckpt: str | None = None) -> str:
+        temporal: bool = False, cond_ckpt: str | None = None,
+        cond_tag: str = "", cond_churn: float = 0.0,
+        coarse_ckpt: str | None = None, coarse_factor: int = 8,
+        coarse_tag: str = "", coarse_guidance: float = 1.0,
+        coarse_project: bool = True) -> str:
     DATA.mkdir(exist_ok=True)
     ref = artifact.read(build_heldout())
     ref_sp = ref.isel(time=slice(0, None, SPATIAL_STRIDE_H)).compute()
@@ -372,13 +525,19 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
     b_sp = half_b.isel(time=slice(0, None, SPATIAL_STRIDE_H)).compute()
     dz = climatological_dz(DATA / "era5_real_stage2.zarr")
 
+    # the reference's own opposing-wind fraction, on the structural window — the value
+    # every `opp-wind frac` cell should be read against (the board has no ERA5 column)
+    from .metrics.structure import opposing_wind_fraction, _center as _center_win
+    ref_opp = opposing_wind_fraction(_center_win(ref_sp, 64), seed=1)
+
     scores: dict[str, dict] = {}
     details: dict[str, dict] = {}
     datasets: dict[str, object] = {}
 
-    def score(name, pred, *, ref_s=None, ref_t=None, seeds=None):
+    def score(name, pred, *, ref_s=None, ref_t=None, seeds=None, dz_s=None):
         print(f"[bench] scoring {name} …", flush=True)
-        s, d = run_suite(pred, ref_sp if ref_s is None else ref_s, dz=dz,
+        s, d = run_suite(pred, ref_sp if ref_s is None else ref_s,
+                         dz=dz if dz_s is None else dz_s,
                          seed_datasets=seeds,
                          ref_temporal=ref if ref_t is None else ref_t)
         scores[name], details[name] = s, d
@@ -390,17 +549,42 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
     scores["self-split floor"].update(conditional_w1_grouped(_cond_floor_groups(ref)))
     for name, ds in _anchor_rows(a_sp).items():
         score(name, ds)
+        scores[name].update(conditional_w1_grouped(
+            _climatological_cond_groups(ds, ref)))
 
-    # bounded baseline (prior state of the art)
+    # structured-noise baselines (simplex = BLE's noise family; Helmholtz-kernel GP),
+    # knobs fit on half A — "the best each noise family can do"; see baselines.py
+    for name, ds in baseline_rows(a_sp, regen=regen).items():
+        score(name, ds)
+        scores[name].update(conditional_w1_grouped(
+            _climatological_cond_groups(ds, ref)))
+
+    # bounded baseline (prior state of the art). Its level coordinate is PRESSURE
+    # (50-140 hPa), not model-level indices — re-index the reference to the nearest-
+    # pressure levels so every per-level zip compares the same altitude (the old
+    # index pairing compared e.g. ble's 140 hPa against ML 58 @ 90.9 hPa, and
+    # FLATTERED ble: fair pairing moves W1 u 13.65→17.9, tail 0.1% 13.2→18.9).
     ble = DATA / "ble_vae_0.zarr"
     if ble.exists():
-        score("ble_vae", artifact.read(ble))
+        ble_ds = artifact.read(ble)
+        idx = [_match_level(ref_sp, p) for p in _level_hpa(ble_ds)]
+        # shear for the 10-level stack: climatological thickness between the MATCHED
+        # reference levels (sum of the per-pair Δz entries), applied to both sides —
+        # dividing ble's level differences by the full 18-level Δz table would be wrong
+        dz_ble = np.array([float(dz[a:b].sum()) for a, b in zip(idx[:-1], idx[1:])])
+        score("ble_vae", ble_ds, ref_s=ref_sp.isel(level=idx),
+              dz_s=dz_ble if np.all(dz_ble > 0) else None)
 
     # the model
     tiling: dict[str, dict] = {}
     if generate and ckpt and Path(ckpt).exists():
         multi, single, seeds = _trained_artifacts(ckpt, regen=regen)
-        score("idiff trained", multi, seeds=seeds)
+        score("idiff trained", multi)
+        # unconditional model ⇒ same climatological protocol as the noise rows, so its
+        # W1_cond is comparable to theirs AND to m2cond's (the old degenerate
+        # one-condition number was neither).
+        scores["idiff trained"].update(conditional_w1_grouped(
+            _climatological_cond_groups(multi, ref)))
         s_single, _ = run_suite(single, ref_sp, dz=dz)
         tiling["idiff trained"] = tiling_penalty(s_single, scores["idiff trained"])
         if temporal:
@@ -412,11 +596,30 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
     # No tiling-penalty row yet: multi-tile needs per-tile coords in the
     # InfiniteDiffusion wrapper — deferred until single-block results are read.
     if generate and cond_ckpt and Path(cond_ckpt).exists():
-        pooled, groups = _conditional_artifacts(cond_ckpt, ref, regen=regen)
+        pooled, groups = _conditional_artifacts(cond_ckpt, ref, regen=regen,
+                                                s_churn=cond_churn, cache_tag=cond_tag)
         score("idiff m2cond", pooled)
         scores["idiff m2cond"].update(conditional_w1_grouped(groups))
     elif generate and cond_ckpt:
         print(f"[bench] no conditional checkpoint at {cond_ckpt} — skipping m2cond row")
+
+    # ---- Phase 5b: the coarse-conditioned (downscaling) experiment ----
+    # ASYMMETRIC BY CONSTRUCTION: this model is handed the synoptic state the
+    # unconditional rows must invent, so it is NOT a like-for-like comparison with them.
+    # The comparison that IS well posed is against `coarse upsampled` — the same
+    # conditioning field with no model — which is therefore always scored alongside it.
+    if generate and coarse_ckpt and Path(coarse_ckpt).exists():
+        up_pooled, up_groups = _coarse_upsample_artifacts(ref, coarse_factor)
+        score("coarse upsampled", up_pooled)
+        scores["coarse upsampled"].update(conditional_w1_grouped(up_groups))
+        c_pooled, c_groups = _conditional_artifacts(coarse_ckpt, ref, regen=regen,
+                                                    cache_tag=coarse_tag or "m2coarse",
+                                                    guidance=coarse_guidance,
+                                                    coarse_project=coarse_project)
+        score("idiff m2coarse", c_pooled)
+        scores["idiff m2coarse"].update(conditional_w1_grouped(c_groups))
+    elif generate and coarse_ckpt:
+        print(f"[bench] no coarse checkpoint at {coarse_ckpt} — skipping coarse rows")
 
     figs = _figures(details, datasets, ref_sp)
 
@@ -437,19 +640,53 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
         "`W1 cond` protocol: a condition = (fixed 64² center window, month, hour-of-day); "
         "reference pool = that hour on each held-out day 8–14, model pool = seeds at those "
         "same timestamps, averaged over the 8 conditions. The floor row uses the "
-        "condition-matched split (days 8–10 vs 11–14). Unconditional rows (`idiff trained`) "
-        "still report the degenerate one-condition version — not comparable across those "
-        "two protocols. `idiff m2cond` rows: temporal metrics are N/A (τ=4-frame blocks "
-        "are below the suite's 16-frame segment minimum — temporal tiling unlocks them) "
-        "and its spatial/dist rows are the 64² center window vs the full reference; no "
-        "tiling penalty yet (per-tile coords in the wrapper are deferred).", "",
+        "condition-matched split (days 8–10 vs 11–14). **Unconditional rows (noise "
+        "baselines, `idiff trained`) are now scored on the same axis as the CLIMATOLOGICAL "
+        "baseline** — their condition-independent pool vs each condition's reference, "
+        "window- and sample-size-matched (14 frames/condition). That makes every row "
+        "comparable and turns the old N/A (\"not applicable\") into the truthful reading, "
+        "\"cannot condition\": the gap between a row and the floor is what conditioning "
+        "has to buy. `W1 speed` and `jet speed err` are the |V| analogues of the u/v "
+        "rows — moment-matching u and v does not automatically match wind SPEED or its "
+        "jet-core tail.", "",
+        "## Structure & vertical realism", "",
+        *_table(scores, STRUCTURE_METRICS), "",
+        f"Every other row in this suite is a population statistic — 1-point marginals and "
+        f"the 2-point covariance (the PSD rows) — which fitted noise reproduces by "
+        f"construction. These four look at what a matched spectrum does NOT fix. "
+        f"`opp-wind frac` = fraction of vertical columns holding a pair of levels whose "
+        f"winds oppose by >90° with both ≥5 m/s; **ERA5 reference = {ref_opp:.3f}** on the "
+        f"same window (floor = the self-split row's `opp-wind err`). "
+        f"Vertical decoupling is the physical basis of balloon station-keeping and is the "
+        f"stated reason NRL rejected simplex noise for RL-HAB's realized field "
+        f"(arXiv 2502.05014); `shear.py` cannot see it, since it pools ADJACENT-level "
+        f"differences per component and never forms an angle between wind vectors. "
+        f"Jet rows threshold each slice at ITS OWN per-level 95th |V| percentile (so "
+        f"coverage is 5% for every row and only SHAPE is compared) and report mean "
+        f"component area / elongation as pred/ref ratios. All structural metrics use a "
+        f"common centered 64² box — a 64²-vs-121² mismatch inverts the decoupling verdict. "
+        f"N/A here means the row lacks the reference's 18-level stack (ble_vae) or has no "
+        f"components above the 8-px size floor (no coherent features at all). "
+        f"**Reliability:** `opp-wind` is the sharp one (floor 0.00; phase-shuffle 0.80 "
+        f"brackets the far end). `jet elong ratio` is a tight estimator (±0.05 splitting "
+        f"one weather period against itself) against a ~±0.17 synoptic floor. "
+        f"**`jet area ratio` is PROVISIONAL — do not score it:** its 1.42 floor is real "
+        f"synoptic variability (days 11–14 hold ~2× as many, smaller components as days "
+        f"8–10), not estimator noise, and a median statistic does not fix it; making the "
+        f"geometry condition-matched the way W1_cond is would.", "",
         "## Physical consistency — temporal", "",
         *_table(scores, TEMPORAL_METRICS), "",
         "Caveats: `ble_vae` is the SF box at 0.45° with 10 arbitrary levels — its "
-        "distribution rows partly measure climate mismatch, and level-indexed comparisons "
-        "pair the first 10 reference levels. `white noise` is at-floor on marginal W1 by "
+        "distribution rows partly measure climate mismatch; its levels (a PRESSURE "
+        "coordinate, hPa) are paired to the reference by nearest pressure — every pair "
+        "within 4.5 hPa. `white noise` is at-floor on marginal W1 by "
         "construction (moment-matched) — read it on the spectral rows; `phase shuffle` "
-        "covers the distribution rows.", "",
+        "covers the distribution rows. `simplex noise` / `helmholtz gp` are structured-"
+        "noise baselines with every knob fit on half A (per-level moments, level/time "
+        "correlations, div/vort split, horizontal scale by SR_E search — baselines.py): "
+        "each row is the best its noise family can do, so a trained model must beat "
+        "them everywhere to claim it learned weather rather than smooth statistics. "
+        "Their marginals are Gaussian-ish by construction (near-floor W1, thin tails).", "",
     ]
     if tiling:
         L += ["## Tiling penalty (multi-tile − single-tile; 0 = seamless)", ""]
@@ -484,8 +721,33 @@ def main(argv=None):
                     help="regenerate cached generator artifacts")
     ap.add_argument("--temporal", action="store_true",
                     help="add the temporal rows (kinematic toy; M2/M3 when their ckpts land)")
+    ap.add_argument("--cond-tag", default="",
+                    help="cache tag for the conditional blocks (the block cache is keyed "
+                         "by sampler settings, NOT by checkpoint — tag alternate ckpts, "
+                         "e.g. --cond-tag 300k with --cond-ckpt .../step_300000.pt)")
+    ap.add_argument("--cond-churn", type=float, default=0.0,
+                    help="s_churn for conditional sampling (own cache file)")
+    ap.add_argument("--coarse-ckpt", default=None,
+                    help="coarse-conditioned (Phase-5b) checkpoint. Adds BOTH the "
+                         "`idiff m2coarse` row and its mandatory `coarse upsampled` "
+                         "baseline — the model is only credited with what it adds "
+                         "beyond plain upsampling of its own conditioning field.")
+    ap.add_argument("--coarse-tag", default="m2coarse", help="block-cache tag for it")
+    ap.add_argument("--coarse-factor", type=int, default=8,
+                    help="must match the checkpoint's training coarse_factor")
+    ap.add_argument("--coarse-guidance", type=float, default=1.0,
+                    help="classifier-free guidance weight for the coarse row (1 = off). "
+                         "Requires a checkpoint trained with coarse_dropout > 0. Gets its "
+                         "own cache file, so sweeping is safe.")
+    ap.add_argument("--no-coarse-project", action="store_true",
+                    help="disable the exact block-mean consistency projection at sampling "
+                         "(ablation; on by default)")
     args = ap.parse_args(argv)
     run(args.ckpt, generate=not args.no_generate, regen=args.regen,
+        cond_tag=args.cond_tag, cond_churn=args.cond_churn,
+        coarse_ckpt=args.coarse_ckpt, coarse_factor=args.coarse_factor,
+        coarse_tag=args.coarse_tag, coarse_guidance=args.coarse_guidance,
+        coarse_project=not args.no_coarse_project,
         temporal=args.temporal, cond_ckpt=args.cond_ckpt)
 
 

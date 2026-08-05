@@ -1,0 +1,60 @@
+# Phase-5b COARSE-CONDITIONED spacetime model — the downscaling experiment.
+#
+# Deliberately IDENTICAL to era5_2023_m2cond.yaml in every respect except `coarse_factor`,
+# so the comparison against the 300k m2cond baseline isolates one variable: same 1-year
+# data (era5_2023.zarr, days 8-14 of every month excluded), same architecture/size, same
+# optimizer, same schedule, same seed. Do not "improve" anything else here — that would
+# confound the experiment (Shaurya's standing one-change-at-a-time rule).
+#
+# What coarse conditioning is and why (full rationale in data.WindCoarseCondSpaceTimeDataset
+# and docs/conditional-base-changes.md decisions 29-35): the model additionally sees a
+# horizontally block-meaned copy of the target block — ALL 18 levels kept, 64x64 -> 8x8
+# cells of 2deg (~200 km) — bilinearly upsampled and concatenated as clean input channels.
+# It answers a different question from the unconditional model ("downscale this forecast"
+# vs "invent weather"), which is exactly the two-field simulator framing (get_forecast ->
+# get_ground_truth) AND targets the measured defect: the 300k model invents almost no
+# vertical decoupling (1-3% opposing-wind columns vs ERA5's 20%), so the coarse field
+# supplies the vertical structure and asks only for horizontal detail.
+#
+# EVALUATION IS ASYMMETRIC AND MUST SAY SO: this model receives synoptic information the
+# unconditional rows must invent. Its mandatory companion baseline is plain bilinear
+# UPSAMPLING of the same coarse field — if the model does not beat that, it added nothing.
+#
+# Launch (GPU is otherwise idle while the 4-yr download runs on CPU):
+#   CONFIG=src/eval/windeval/generators/infinite_diffusion/configs/era5_2023_m2coarse.yaml \
+#     sbatch --gres=gpu:gpu48:1 --mem=48G -J idiff-m2coarse \
+#     src/eval/windeval/generators/infinite_diffusion/configs/train_temporal.sbatch
+data:
+  data_path: src/eval/windeval/data/era5_2023.zarr
+  crop: 64
+  levels: [49, 66]
+
+spacetime: true
+conditional: true
+coarse_factor: 8                  # 64 -> 8x8 cells @ 2deg (~200 km); above the 56 km
+                                  # L_eff target, so real fine-scale work is left to do
+n_frames: 4
+frame_stride: 1
+temporal_kernel: 3
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  sigma_data: 1.0
+
+train:
+  batch_size: 16                  # gpu48 slice (admin: stay off the gpu96 slices)
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 300000                 # matches the m2cond baseline exactly
+  warmup_steps: 1000
+  num_workers: 4
+  out_dir: runs/idiff_m2coarse
+  ckpt_every: 1000
+  snapshot_every: 10000           # denser than the baseline: we want an early read at
+                                  # 20-50k, since the conditional task converges faster
+  log_every: 100
+  device: cuda                    # never `auto` — it silently falls back to CPU
+  seed: 0

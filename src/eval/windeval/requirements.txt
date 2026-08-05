@@ -4,3 +4,4 @@ eccodes
 xarray
 zarr>=3
 numpy
+opensimplex>=0.4.5   # simplex-noise baseline (baselines.py)

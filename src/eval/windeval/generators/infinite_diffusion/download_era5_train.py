@@ -31,9 +31,19 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from ...ingest_era5 import SF_LAT, SF_LON  # noqa: F401  (kept for provenance/conditioning)
-from ...l137 import _AB
-from ... import artifact
+# Work both as a package module (relative) and as a standalone script on the cluster —
+# same pattern as train.py: `python .../download_era5_train.py` must not import
+# src/eval/__init__ (which pulls the jax/gym stack, absent from .venv-idiff and
+# unimportable on the AVX-less login node). artifact/l137 are numpy/xarray-only.
+try:
+    from ...ingest_era5 import SF_LAT, SF_LON  # noqa: F401  (kept for provenance/conditioning)
+    from ...l137 import _AB
+    from ... import artifact
+except ImportError:  # pragma: no cover - standalone script path
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    import artifact                    # type: ignore
+    from l137 import _AB               # type: ignore
 
 
 def _mlevels(lo: int, hi: int) -> str:
