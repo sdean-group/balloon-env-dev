@@ -11,10 +11,12 @@ set -euo pipefail
 REPO="${REPO:-$HOME/balloon-env-dev-code}"
 PYTHON="${PYTHON:-$HOME/envs/idiff-eval-titan/bin/python}"
 DATA_ROOT="${DATA_ROOT:-/share/dean/$USER/balloon-research}"
-REFERENCE="${REFERENCE:-$REPO/src/eval/windeval/data/era5_heldout.zarr}"
+REFERENCE="${REFERENCE:-$DATA_ROOT/era5/era5_temporal_24h.zarr}"
 SYNTH="${SYNTH:-$DATA_ROOT/rlhab/rlhab_synthwinds_heldout.zarr}"
 DZ_SOURCE="${DZ_SOURCE:-$REPO/src/eval/windeval/data/era5_real_stage2.zarr}"
-OUTPUT_DIR="${OUTPUT_DIR:-$DATA_ROOT/outputs/rlhab_synthwinds}"
+DZ_FILE="${DZ_FILE:-$REPO/src/eval/windeval/data/climatological_dz_m.npy}"
+RAW_DIR="${RAW_DIR:-$DATA_ROOT/rlhab/raw}"
+OUTPUT_DIR="${OUTPUT_DIR:-$DATA_ROOT/outputs/rlhab_synthwinds_v2}"
 
 cd "$REPO"
 export PYTHONPATH="$REPO/src/eval${PYTHONPATH:+:$PYTHONPATH}"
@@ -24,4 +26,6 @@ export PYTHONUNBUFFERED=1
   --reference "$REFERENCE" \
   --synthwinds "$SYNTH" \
   --dz-source "$DZ_SOURCE" \
+  --dz-file "$DZ_FILE" \
+  --raw-dir "$RAW_DIR" \
   --output-dir "$OUTPUT_DIR"
