@@ -14,6 +14,7 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import FancyArrow
@@ -22,13 +23,53 @@ HERE = Path(__file__).resolve().parent
 
 INK = "#173B6C"        # navy   -- primary text
 MUTED = "#5F6E82"      # gray   -- secondary text, process arrows
-CMAP = "viridis"       # sequential magnitude, monotonic lightness, CVD-safe
+
+
+def bright_cmap(name: str = "viridis", lo: float = 0.26, hi: float = 1.0):
+    """Sequential ramp with its darkest end trimmed.
+
+    Plain viridis bottoms out in a near-black indigo, which dominates the frame
+    whenever most of the block is slow-moving and prints muddy. Starting the ramp
+    partway up lifts those regions while keeping the map single-hue-family,
+    monotonic in lightness and CVD-safe -- i.e. still a legitimate sequential
+    magnitude encoding, just a brighter one.
+    """
+    base = plt.get_cmap(name)
+    return mcolors.LinearSegmentedColormap.from_list(
+        f"{name}_bright", base(np.linspace(lo, hi, 256))
+    )
 
 # Chosen from the 19-state trajectory for an even visual progression. 13 -> 14 for
 # the fourth slot: 13 is still visibly grainy and made the jump to the final panel
 # read as a discontinuity.
 PANELS = (0, 11, 12, 14, 18)
 CAPTIONS = ("pure noise", "", "", "", "generated wind field")
+
+# Four-panel version for standalone frames: pure static -> structure through the
+# static -> nearly resolved -> final field.
+SEPARATE_PANELS = (0, 11, 13, 18)
+
+
+def render_separate(speeds, idxs, cmap, out_pattern: str, px: int = 1600,
+                    pdf: bool = False) -> list[Path]:
+    """Write each state as its own borderless square image, no text."""
+    written = []
+    for k, i in enumerate(idxs, start=1):
+        field = speeds[i]
+        fig = plt.figure(figsize=(px / 300, px / 300), dpi=300, facecolor="white")
+        ax = fig.add_axes([0, 0, 1, 1])          # fills the canvas: no padding at all
+        lo, hi = np.percentile(field, [2, 98])
+        ax.imshow(field, cmap=cmap, vmin=lo, vmax=hi, interpolation="nearest")
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_axis_off()
+        out = Path(out_pattern.format(k=k))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out, dpi=300, facecolor="white", pad_inches=0)
+        written.append(out)
+        if pdf:
+            fig.savefig(out.with_suffix(".pdf"), facecolor="white", pad_inches=0)
+        plt.close(fig)
+    return written
 
 
 def _pick_font() -> str:
@@ -47,12 +88,32 @@ def main() -> None:
     ap.add_argument("--pdf", action="store_true", help="also write a .pdf alongside")
     ap.add_argument("--no-process-arrows", action="store_true",
                     help="drop the forward/backward process arrows entirely")
+    ap.add_argument("--separate", action="store_true",
+                    help="write each state as its own borderless image instead of a strip")
+    ap.add_argument("--separate-out", default="poster/figures/diffusion_step_{k}.png")
+    ap.add_argument("--panels", default=None,
+                    help="comma-separated trajectory indices to render")
+    ap.add_argument("--cmap-lo", type=float, default=0.26,
+                    help="where to start the viridis ramp; higher = brighter")
     args = ap.parse_args()
 
     z = np.load(args.states)
     speeds = z["speeds"]
-    panels = [speeds[i] for i in PANELS]
+    cmap = bright_cmap(lo=args.cmap_lo)
 
+    if args.panels:
+        idxs = tuple(int(v) for v in args.panels.split(","))
+    else:
+        idxs = SEPARATE_PANELS if args.separate else PANELS
+
+    if args.separate:
+        written = render_separate(speeds, idxs, cmap, args.separate_out, pdf=args.pdf)
+        for i, p in zip(idxs, written):
+            print(f"wrote {p}   (trajectory state {i}, sigma {z['sigma'][i]:.2f})"
+                  if i < len(z["sigma"]) else f"wrote {p}   (final state)")
+        return
+
+    panels = [speeds[i] for i in idxs]
     plt.rcParams["font.family"] = _pick_font()
 
     n = len(panels)
@@ -69,15 +130,17 @@ def main() -> None:
     ph = pw * fig_w / fig_h
     py = 0.375
 
-    for k, (idx, field) in enumerate(zip(PANELS, panels)):
+    for k, (idx, field) in enumerate(zip(idxs, panels)):
         ax = fig.add_axes([left + k * (pw + gutter), py, pw, ph])
         lo, hi = np.percentile(field, [2, 98])
-        ax.imshow(field, cmap=CMAP, vmin=lo, vmax=hi, interpolation="nearest")
+        ax.imshow(field, cmap=cmap, vmin=lo, vmax=hi, interpolation="nearest")
         ax.set_xticks([]); ax.set_yticks([])
         for s in ax.spines.values():
             s.set_visible(False)
-        if CAPTIONS[k]:
-            ax.set_xlabel(CAPTIONS[k], fontsize=13, color=INK, labelpad=9)
+        # Caption only the endpoints, so any panel count stays labelled correctly.
+        cap = CAPTIONS[0] if k == 0 else (CAPTIONS[-1] if k == n - 1 else "")
+        if cap:
+            ax.set_xlabel(cap, fontsize=13, color=INK, labelpad=9)
 
     x0, x1 = left, left + n * pw + (n - 1) * gutter
     xmid = (x0 + x1) / 2
@@ -103,7 +166,7 @@ def main() -> None:
     fig.text(xmid, cb_y + cb_h + 0.020, "wind speed", ha="center", va="bottom",
              fontsize=12, color=MUTED)
     cax = fig.add_axes([cb_x, cb_y, cb_w, cb_h])
-    cax.imshow(np.linspace(0, 1, 256)[None], aspect="auto", cmap=CMAP)
+    cax.imshow(np.linspace(0, 1, 256)[None], aspect="auto", cmap=cmap)
     cax.set_xticks([]); cax.set_yticks([])
     for s in cax.spines.values():
         s.set_visible(False)
