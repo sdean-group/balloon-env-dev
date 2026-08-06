@@ -58,6 +58,27 @@ def match_levels(ref: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
     return ref.isel(level=idx)
 
 
+def truncate_leads(ds: xr.Dataset, max_lead_h: float) -> xr.Dataset:
+    """Cut every contiguous segment to at most ``max_lead_h`` of lead time.
+
+    Without this, each row is scored over whatever horizon it happens to reach
+    (diffusion 23 h, ble 48 h, white noise 68 h) while `final spread ratio` always
+    divides by the reference's spread at 167 h. Tracer spread grows then saturates, so
+    a short row is penalised for being short rather than for being wrong. Truncating
+    every row -- reference included -- to one horizon removes that confound.
+    """
+    segs = temporal.contiguous_segments(ds)
+    if not segs:
+        return ds
+    t = np.asarray(ds["time"].values)
+    keep: list[int] = []
+    for s in segs:
+        t0 = t[s.start]
+        lead_h = (t[s] - t0) / np.timedelta64(1, "h")
+        keep.extend(int(s.start + i) for i in np.flatnonzero(lead_h <= max_lead_h + 1e-9))
+    return ds.isel(time=sorted(set(keep)))
+
+
 def score(pred: xr.Dataset, ref: xr.Dataset) -> dict:
     out = {}
     if not (temporal.has_time(pred) and temporal.has_time(ref)):
@@ -74,10 +95,17 @@ def main() -> None:
     ap.add_argument("--min-frames", type=int, default=8)
     ap.add_argument("--diffusion-dir", default=None,
                     help="directory of idiff_temporal_*.zarr from gen_temporal_sequences.py")
+    ap.add_argument("--max-lead-hours", type=float, default=None,
+                    help="truncate every row (reference included) to a common horizon")
     args = ap.parse_args()
 
     temporal.MIN_FRAMES = int(args.min_frames)
-    print(f"MIN_FRAMES = {temporal.MIN_FRAMES}\n")
+    print(f"MIN_FRAMES = {temporal.MIN_FRAMES}"
+          + (f"   common horizon = {args.max_lead_hours:g} h" if args.max_lead_hours
+             else "   horizon = each row's own (NOT comparable across rows)") + "\n")
+
+    cut = ((lambda d: truncate_leads(d, args.max_lead_hours))
+           if args.max_lead_hours else (lambda d: d))
 
     # Reproduce the board's exact inputs. The anchors are NOT the stored anchor_*.zarr
     # files: benchmark._anchor_rows derives them from the 4-hourly-subsampled half A,
@@ -93,14 +121,15 @@ def main() -> None:
     rows: dict[str, dict] = {}
 
     print("scoring self-split floor …", flush=True)
-    rows["ERA5 floor"] = score(a_sp, half_b)
+    rows["ERA5 floor"] = score(cut(a_sp), cut(half_b))
 
     print("scoring white noise …", flush=True)
-    rows["white noise"] = score(_anchor_rows(a_sp)["white noise"], ref)
+    # anchors are built from the FULL a_sp so the rng draw matches the board, then cut
+    rows["white noise"] = score(cut(_anchor_rows(a_sp)["white noise"]), cut(ref))
 
     print("scoring ble_vae (6-hourly axis) …", flush=True)
     ble = ble_with_real_time(DATA / "ble_vae_0.zarr")
-    rows["BLE-VAE"] = score(ble, match_levels(ref, ble))
+    rows["BLE-VAE"] = score(cut(ble), cut(match_levels(ref, ble)))
 
     if args.diffusion_dir:
         d = Path(args.diffusion_dir)
@@ -110,7 +139,7 @@ def main() -> None:
             ds = xr.concat([artifact.read(p) for p in parts], dim="time")
             segs = temporal.contiguous_segments(ds)
             print(f"  contiguous segments: {[s.stop - s.start for s in segs]}")
-            rows["our diffusion"] = score(ds, ref)
+            rows["our diffusion"] = score(cut(ds), cut(ref))
         else:
             print(f"no idiff_temporal_*.zarr in {d}")
 
@@ -125,6 +154,11 @@ def main() -> None:
             line += f"{'N/A':>18}" if not np.isfinite(v) else f"{v:>18.2f}"
         print(line)
     print("-" * 68)
+
+    if args.max_lead_hours:
+        print("\nhorizon truncated -- the published white-noise row was measured on its "
+              "own 68 h horizon, so it is NOT expected to reproduce here.")
+        return
 
     wnr = rows["white noise"]
     print("\nvalidation vs published white-noise row (MIN_FRAMES=16):")
