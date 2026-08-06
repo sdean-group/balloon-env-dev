@@ -66,6 +66,7 @@ COLORS = {
     "kinematic toy": "#e87ba4", "time shuffled": "#eb6834",
     "idiff m2cond": "#0ea5b7", "idiff m2coarse": "#c2410c",
     "coarse upsampled": "#9a8c78",
+    "rlhab synthwinds": "#8b5cf6",
     # CVD-checked additions (Machado-sim min ΔE vs all others: 32 / 12.7)
     "helmholtz gp": "#3a1fdf", "simplex noise": "#2fbf66",
 }
@@ -191,6 +192,35 @@ def _climatological_cond_groups(pred_ds, ref, seed: int = 0):
             idx = sorted(rng.choice(nt, k, replace=False))
             groups.append(([p.isel(time=[i]) for i in idx],
                            _cond_ref(ref, y0, x0, m, h, COND_DAYS)))
+    return groups
+
+
+def _observation_condition_groups(pred_ds, ref):
+    """Condition groups for timestamped observational reconstructions.
+
+    RL-HAB SynthWinds is deterministic but changes with the observed radiosonde profile
+    at each timestamp.  Its seven held-out days are therefore the samples within each
+    fixed (location, month, hour) condition.  This is not a seeded generator and must be
+    described as observation-driven in reports.
+    """
+    y0, x0, _, _ = _cond_window(ref)
+    pred = pred_ds.isel(y=slice(y0, y0 + 64), x=slice(x0, x0 + 64))
+    groups = []
+    for month in COND_MONTHS:
+        for hour in COND_HOURS:
+            time = pred["time"]
+            selected = pred.sel(
+                time=(time.dt.month == month)
+                & (time.dt.hour == hour)
+                & time.dt.day.isin(list(COND_DAYS))
+            )
+            if selected.sizes["time"] != len(COND_DAYS):
+                raise ValueError(
+                    f"RL-HAB condition ({month=}, {hour=}) has "
+                    f"{selected.sizes['time']} frames; expected {len(COND_DAYS)}"
+                )
+            samples = [selected.isel(time=[i]) for i in range(selected.sizes["time"])]
+            groups.append((samples, _cond_ref(ref, y0, x0, month, hour, COND_DAYS)))
     return groups
 
 
@@ -516,7 +546,8 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
         cond_tag: str = "", cond_churn: float = 0.0,
         coarse_ckpt: str | None = None, coarse_factor: int = 8,
         coarse_tag: str = "", coarse_guidance: float = 1.0,
-        coarse_project: bool = True) -> str:
+        coarse_project: bool = True,
+        rlhab_synthwinds: str | None = None) -> str:
     DATA.mkdir(exist_ok=True)
     ref = artifact.read(build_heldout())
     ref_sp = ref.isel(time=slice(0, None, SPATIAL_STRIDE_H)).compute()
@@ -558,6 +589,19 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
         score(name, ds)
         scores[name].update(conditional_w1_grouped(
             _climatological_cond_groups(ds, ref)))
+
+    # RL-HAB's comparable wind source is SynthWinds, not its DQN controller.  It is a
+    # sparse radiosonde reconstruction at the evaluation timestamps, so this row is
+    # condition matched but observation driven rather than a free-running generator.
+    if rlhab_synthwinds:
+        rlhab_path = Path(rlhab_synthwinds)
+        if not rlhab_path.exists():
+            raise FileNotFoundError(f"RL-HAB SynthWinds artifact not found: {rlhab_path}")
+        rlhab = artifact.read(rlhab_path).compute()
+        score("rlhab synthwinds", rlhab)
+        scores["rlhab synthwinds"].update(
+            conditional_w1_grouped(_observation_condition_groups(rlhab, ref))
+        )
 
     # bounded baseline (prior state of the art). Its level coordinate is PRESSURE
     # (50-140 hPa), not model-level indices — re-index the reference to the nearest-
@@ -687,6 +731,10 @@ def run(ckpt: str | None, *, generate: bool = True, regen: bool = False,
         "each row is the best its noise family can do, so a trained model must beat "
         "them everywhere to claim it learned weather rather than smooth statistics. "
         "Their marginals are Gaussian-ish by construction (near-floor W1, thin tails).", "",
+        "`rlhab synthwinds` is RL-HAB's radiosonde-based realized field, not its DQN "
+        "controller. It uses observations from the scored timestamps, nearest-station "
+        "interpolation, and broad spatial smoothing. Treat it as an observation-driven "
+        "simulation baseline, not as an unconditional generative model.", "",
     ]
     if tiling:
         L += ["## Tiling penalty (multi-tile − single-tile; 0 = seamless)", ""]
@@ -742,13 +790,16 @@ def main(argv=None):
     ap.add_argument("--no-coarse-project", action="store_true",
                     help="disable the exact block-mean consistency projection at sampling "
                          "(ablation; on by default)")
+    ap.add_argument("--rlhab-synthwinds", default=None,
+                    help="RL-HAB SynthWinds WindArtifact to add as a benchmark row")
     args = ap.parse_args(argv)
     run(args.ckpt, generate=not args.no_generate, regen=args.regen,
         cond_tag=args.cond_tag, cond_churn=args.cond_churn,
         coarse_ckpt=args.coarse_ckpt, coarse_factor=args.coarse_factor,
         coarse_tag=args.coarse_tag, coarse_guidance=args.coarse_guidance,
         coarse_project=not args.no_coarse_project,
-        temporal=args.temporal, cond_ckpt=args.cond_ckpt)
+        temporal=args.temporal, cond_ckpt=args.cond_ckpt,
+        rlhab_synthwinds=args.rlhab_synthwinds)
 
 
 if __name__ == "__main__":

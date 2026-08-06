@@ -5,3 +5,6 @@ xarray
 zarr>=3
 numpy
 opensimplex>=0.4.5   # simplex-noise baseline (baselines.py)
+requests             # RL-HAB radiosonde download
+beautifulsoup4       # RL-HAB University of Wyoming response parser
+scipy                # RL-HAB nearest-neighbor grid + Gaussian smoothing
