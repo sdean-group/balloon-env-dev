@@ -29,6 +29,13 @@ def _fmt(value) -> str:
         return "N/A"
 
 
+DISPLAY_NAMES = {
+    "W1 cond u (m/s)": "W1(u | c) (m/s)",
+    "W1 cond v (m/s)": "W1(v | c) (m/s)",
+    "W1 cond (m/s)": "mean W1(u,v | c) (m/s)",
+}
+
+
 def score(reference_path: Path, synth_path: Path, output_dir: Path, dz_source: Path | None):
     output_dir.mkdir(parents=True, exist_ok=True)
     ref = artifact.read(reference_path)
@@ -61,8 +68,9 @@ def score(reference_path: Path, synth_path: Path, output_dir: Path, dz_source: P
     ]
     for metric in metrics:
         direction, _ = METRIC_INFO[metric]
+        display_name = DISPLAY_NAMES.get(metric, metric)
         lines.append(
-            f"| {metric} ({direction}) | {_fmt(floor.get(metric))} | "
+            f"| {display_name} ({direction}) | {_fmt(floor.get(metric))} | "
             f"{_fmt(synth.get(metric))} |"
         )
     lines.extend(
