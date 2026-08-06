@@ -15,7 +15,7 @@ REFERENCE="${REFERENCE:-$DATA_ROOT/era5/era5_temporal_24h.zarr}"
 SYNTH="${SYNTH:-$DATA_ROOT/rlhab/rlhab_synthwinds_heldout.zarr}"
 DZ_SOURCE="${DZ_SOURCE:-$REPO/src/eval/windeval/data/era5_real_stage2.zarr}"
 DZ_FILE="${DZ_FILE:-$REPO/src/eval/windeval/data/climatological_dz_m.npy}"
-RAW_DIR="${RAW_DIR:-$DATA_ROOT/rlhab/raw}"
+RAW_DIR="${RAW_DIR:-$DATA_ROOT/rlhab/raw_soundings_2023}"
 OUTPUT_DIR="${OUTPUT_DIR:-$DATA_ROOT/outputs/rlhab_synthwinds_v2}"
 
 cd "$REPO"
