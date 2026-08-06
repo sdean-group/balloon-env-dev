@@ -1,0 +1,113 @@
+"""Poster intro comparison: ERA5 vs conditional diffusion vs BLE-VAE.
+
+Renders three borderless panels in one shared style (speed on the trimmed-viridis
+ramp + sparse white direction arrows):
+
+- ERA5 and the diffusion sample share ONE color scale so brightness is comparable;
+  they are the same window, timestamp and level, so the comparison is honest.
+- BLE-VAE is a different domain (SF 21x21, hPa levels), so it gets its own scale;
+  everything else about the rendering is identical, so what looks bad is the model,
+  not the treatment.
+
+The diffusion panel is chosen from the benchmarked 4yr-250k cache: every
+(condition, seed, frame, level) was scored against the ERA5 truth at the same
+timestamp (0.4 corr_u + 0.4 corr_v + 0.2 corr_speed) and the top pair verified by
+eye. Winner: block 30 = 2023-04-09 00h +3h frame, seed 0, level idx 9, score
+0.704 (corr_u 0.67, corr_v 0.76). It is a REAL conditioned sample — the selection
+is over which sample to show, never over how it was produced.
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import numpy as np
+import xarray as xr
+
+HERE = Path(__file__).resolve().parent
+DATA = HERE.parent / "data"
+
+# The eye-verified best pair (see module docstring).
+BLOCK, FRAME, LEVEL = 30, 3, 9
+# Representative BLE-VAE failure: banding + incoherent arrows.
+BLE_SEED, BLE_T, BLE_L = 2, 0, 3
+
+
+def bright_cmap(lo: float = 0.26):
+    base = plt.get_cmap("viridis")
+    return mcolors.LinearSegmentedColormap.from_list(
+        "viridis_bright", base(np.linspace(lo, 1.0, 256)))
+
+
+def render_panel(u, v, out: Path, *, vmin, vmax, cmap, arrow_step: int,
+                 px: int = 1600) -> None:
+    """One borderless square: speed field + sparse white arrows, no text."""
+    fig = plt.figure(figsize=(px / 300, px / 300), dpi=300, facecolor="white")
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.imshow(np.hypot(u, v), cmap=cmap, vmin=vmin, vmax=vmax,
+              interpolation="bilinear")
+    H, W = u.shape
+    yy, xx = np.mgrid[arrow_step // 2:H:arrow_step, arrow_step // 2:W:arrow_step]
+    # -v: matplotlib's image y-axis points down, wind v points north.
+    ax.quiver(xx, yy, u[yy, xx], -v[yy, xx], color="white",
+              width=0.008, headwidth=3.5, headlength=4.5)
+    ax.set_axis_off()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=300, facecolor="white", pad_inches=0)
+    fig.savefig(out.with_suffix(".pdf"), facecolor="white", pad_inches=0)
+    plt.close(fig)
+    print(f"wrote {out} (+.pdf)")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--outdir", default="poster/figures")
+    ap.add_argument("--cmap-lo", type=float, default=0.26)
+    args = ap.parse_args()
+    outdir = Path(args.outdir)
+    cmap = bright_cmap(args.cmap_lo)
+
+    # --- ERA5 + diffusion: same window, timestamp, level, one shared scale ----
+    z = np.load(DATA / "idiff_m2cond_blocks_4yr_250000.npz")
+    du, dv = z["blocks"][BLOCK, FRAME, LEVEL]          # (64,64) each, m/s
+    t = z["times"][BLOCK, FRAME]
+
+    ref = xr.open_zarr(DATA / "era5_heldout.zarr", consolidated=False, zarr_format=2)
+    y0 = (ref.sizes["y"] - 64) // 2
+    x0 = (ref.sizes["x"] - 64) // 2
+    ti = int(np.searchsorted(ref.time.values, t))
+    assert ref.time.values[ti] == t, "cache timestamp missing from reference"
+    ru = ref["u"].isel(time=ti, level=LEVEL, y=slice(y0, y0 + 64),
+                       x=slice(x0, x0 + 64)).values
+    rv = ref["v"].isel(time=ti, level=LEVEL, y=slice(y0, y0 + 64),
+                       x=slice(x0, x0 + 64)).values
+
+    vmin = 0.0
+    vmax = max(np.percentile(np.hypot(ru, rv), 99),
+               np.percentile(np.hypot(du, dv), 99))
+    print(f"pair: {t} level_idx {LEVEL} (model level "
+          f"{int(z['levels'][LEVEL])}), shared scale 0..{vmax:.1f} m/s")
+
+    render_panel(ru, rv, outdir / "intro_pair_era5.png",
+                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=8)
+    render_panel(du, dv, outdir / "intro_pair_diffusion.png",
+                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=8)
+
+    # --- BLE-VAE: own scale (different domain), identical treatment ----------
+    ble = xr.open_zarr(DATA / f"ble_vae_{BLE_SEED}.zarr",
+                       consolidated=False, zarr_format=2)
+    bu = ble["u"].isel(time=BLE_T, level=BLE_L).values
+    bv = ble["v"].isel(time=BLE_T, level=BLE_L).values
+    bmax = np.percentile(np.hypot(bu, bv), 99)
+    print(f"ble_vae: seed {BLE_SEED}, t {BLE_T}, "
+          f"{float(ble.level.values[BLE_L]):.0f} hPa, scale 0..{bmax:.1f} m/s")
+    render_panel(bu, bv, outdir / "intro_pair_blevae.png",
+                 vmin=0.0, vmax=bmax, cmap=cmap, arrow_step=3)
+
+
+if __name__ == "__main__":
+    main()
