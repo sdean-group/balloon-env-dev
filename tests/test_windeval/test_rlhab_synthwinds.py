@@ -8,6 +8,7 @@ from windeval.generators.rlhab_synthwinds.generate import (
     _nearest_smoothed_field,
     _profile_at_levels,
     parse_archive,
+    radiosonde_layer_thickness,
 )
 
 
@@ -43,6 +44,7 @@ def test_parse_current_wyoming_fm35_response(tmp_path: Path):
     assert profile["pressure"].tolist() == [130.0, 100.0, 70.0, 40.0]
     np.testing.assert_allclose(profile["u"], [20.0, 0.0, -40.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(profile["v"], [0.0, 30.0, 0.0, -10.0], atol=1e-6)
+    assert profile["height"].tolist() == [15000.0, 17000.0, 19000.0, 22000.0]
 
 
 def test_profile_interpolates_in_pressure():
@@ -88,3 +90,19 @@ def test_observation_conditions_use_seven_matching_days():
     assert len(groups) == 8
     assert all(len(samples) == 7 and reference.sizes["time"] == 7
                for samples, reference in groups)
+
+
+def test_radiosonde_layer_thickness_uses_pressure_height_profiles(tmp_path: Path):
+    template = """<html><pre>
+-----------------------------------------------------------------------------
+   PRES   HGHT   TEMP   DWPT   RELH   MIXR   DRCT   SPED   THTA   THTE   THTV
+    hPa      m      C      C      %   g/kg    deg    m/s      K      K      K
+-----------------------------------------------------------------------------
+  130.0  15000  -50.0  -60.0     20   0.10    270   20.0  300.0  301.0  300.1
+  100.0  17000  -55.0  -65.0     20   0.08    180   30.0  310.0  311.0  310.1
+   70.0  19000  -60.0  -70.0     20   0.05     90   40.0  320.0  321.0  320.1
+   40.0  22000  -67.0  -77.0     20   0.02      0   10.0  340.0  341.0  340.1
+</pre></html>"""
+    (tmp_path / "20230108T00-72493.html").write_text(template)
+    dz = radiosonde_layer_thickness(tmp_path, np.array([70.0, 100.0, 130.0]))
+    np.testing.assert_allclose(dz, [2000.0, 2000.0])

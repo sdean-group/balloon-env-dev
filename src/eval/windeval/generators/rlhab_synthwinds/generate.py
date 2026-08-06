@@ -51,9 +51,9 @@ def parse_archive(path: Path, station_wmo: str, station_position) -> list[dict]:
             "direction", "speed", "theta", "theta_e", "theta_v",
         ],
     )
-    for column in ("pressure", "direction", "speed"):
+    for column in ("pressure", "height", "direction", "speed"):
         table[column] = pd.to_numeric(table[column], errors="coerce")
-    table = table.dropna(subset=["pressure", "direction", "speed"])
+    table = table.dropna(subset=["pressure", "height", "direction", "speed"])
     if len(table) < 4:
         return []
     timestamp = datetime.strptime(path.name.split("-")[0], "%Y%m%dT%H")
@@ -66,9 +66,40 @@ def parse_archive(path: Path, station_wmo: str, station_position) -> list[dict]:
         "lat": float(station_position[0]),
         "lon": float(station_position[1]),
         "pressure": pressure,
+        "height": table["height"].to_numpy(float),
         "u": -speed * np.sin(direction),
         "v": -speed * np.cos(direction),
     }]
+
+
+def radiosonde_layer_thickness(raw_dir: Path, target_hpa: np.ndarray) -> np.ndarray:
+    """Robust climatological layer thickness from the cached sounding profiles.
+
+    The benchmark applies one common thickness vector to generated and ERA5 winds.
+    Using the observed pressure/height columns keeps the shear calculation physical
+    without requiring a second ERA5 artifact containing temperature and humidity.
+    """
+    heights = []
+    for path in sorted(raw_dir.glob("*.html")):
+        profiles = parse_archive(path, path.stem.rsplit("-", 1)[-1], (0.0, 0.0))
+        if not profiles:
+            continue
+        profile = profiles[0]
+        order = np.argsort(profile["pressure"])
+        pressure = profile["pressure"][order]
+        height = profile["height"][order]
+        pressure, unique = np.unique(pressure, return_index=True)
+        height = height[unique]
+        interpolated = np.interp(target_hpa, pressure, height, left=np.nan, right=np.nan)
+        heights.append(interpolated)
+    if not heights:
+        raise RuntimeError(f"no valid sounding heights found in {raw_dir}")
+    z = np.asarray(heights, dtype=float)
+    pair_dz = z[:, :-1] - z[:, 1:]
+    dz = np.nanmedian(np.where(pair_dz > 0, pair_dz, np.nan), axis=0)
+    if dz.shape != (len(target_hpa) - 1,) or not np.isfinite(dz).all():
+        raise RuntimeError("soundings do not cover every requested pressure-level pair")
+    return dz
 
 
 def _profile_at_levels(profile: dict, target_hpa: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
