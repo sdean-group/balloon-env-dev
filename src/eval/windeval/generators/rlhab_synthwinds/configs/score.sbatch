@@ -11,7 +11,7 @@ set -euo pipefail
 REPO="${REPO:-$HOME/balloon-env-dev-code}"
 PYTHON="${PYTHON:-$HOME/envs/idiff-eval-titan/bin/python}"
 DATA_ROOT="${DATA_ROOT:-/share/dean/$USER/balloon-research}"
-REFERENCE="${REFERENCE:-$DATA_ROOT/era5/era5_temporal_24h.zarr}"
+REFERENCE="${REFERENCE:-$DATA_ROOT/era5/era5_spatial_v2_4h.zarr}"
 SYNTH="${SYNTH:-$DATA_ROOT/rlhab/rlhab_synthwinds_heldout.zarr}"
 DZ_SOURCE="${DZ_SOURCE:-$REPO/src/eval/windeval/data/era5_real_stage2.zarr}"
 DZ_FILE="${DZ_FILE:-$REPO/src/eval/windeval/data/climatological_dz_m.npy}"

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from windeval import artifact
 from windeval.benchmark import _observation_condition_groups
@@ -10,6 +11,7 @@ from windeval.generators.rlhab_synthwinds.generate import (
     parse_archive,
     radiosonde_layer_thickness,
 )
+from windeval.generators.rlhab_synthwinds.score import _spatial_reference
 
 
 def _profile(lat, lon, u, v):
@@ -106,3 +108,35 @@ def test_radiosonde_layer_thickness_uses_pressure_height_profiles(tmp_path: Path
     (tmp_path / "20230108T00-72493.html").write_text(template)
     dz = radiosonde_layer_thickness(tmp_path, np.array([70.0, 100.0, 130.0]))
     np.testing.assert_allclose(dz, [2000.0, 2000.0])
+
+
+def test_spatial_reference_selects_complete_four_hour_protocol():
+    times = np.array([
+        np.datetime64(f"2023-{month:02d}-{day:02d}T{hour:02d}")
+        for month in (1, 4, 7, 10)
+        for day in range(8, 15)
+        for hour in range(0, 24, 4)
+    ])
+    shape = (len(times), 2, 4, 4)
+    ds = artifact.make_field(
+        np.zeros(shape), np.ones(shape), level=np.array([100.0, 80.0]),
+        lat=np.arange(4), lon=np.arange(4), time=times,
+    )
+    selected = _spatial_reference(ds)
+    assert selected.sizes["time"] == 168
+
+
+def test_spatial_reference_rejects_missing_floor_days():
+    times = np.array([
+        np.datetime64(f"2023-{month:02d}-{day:02d}T{hour:02d}")
+        for month in (1, 4, 7, 10)
+        for day in (8, 9)
+        for hour in range(0, 24, 4)
+    ])
+    shape = (len(times), 2, 4, 4)
+    ds = artifact.make_field(
+        np.zeros(shape), np.ones(shape), level=np.array([100.0, 80.0]),
+        lat=np.arange(4), lon=np.arange(4), time=times,
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        _spatial_reference(ds)

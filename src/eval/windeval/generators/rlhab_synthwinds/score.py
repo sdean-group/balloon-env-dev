@@ -37,6 +37,45 @@ DISPLAY_NAMES = {
     "W1 cond (m/s)": "mean W1(u,v | c) (m/s)",
 }
 
+EVAL_MONTHS = (1, 4, 7, 10)
+EVAL_DAYS = tuple(range(8, 15))
+EVAL_HOURS = tuple(range(0, 24, SPATIAL_STRIDE_H))
+
+
+def _spatial_reference(reference):
+    """Select and validate the exact held-out spatial-evaluation timestamps."""
+    time = reference["time"]
+    selected = reference.sel(
+        time=time.dt.month.isin(EVAL_MONTHS)
+        & time.dt.day.isin(EVAL_DAYS)
+    ).sortby("time")
+    hours = set(int(value) for value in selected.time.dt.hour.values.tolist())
+    expected = len(EVAL_MONTHS) * len(EVAL_DAYS) * len(EVAL_HOURS)
+    if hours == set(range(24)):
+        selected = selected.sel(time=selected.time.dt.hour.isin(EVAL_HOURS))
+    elif hours != set(EVAL_HOURS):
+        raise ValueError(
+            "ERA5 reference must contain either every hour or the standard 4-hour "
+            f"timestamps; found hours={sorted(hours)}"
+        )
+    if selected.sizes["time"] != expected:
+        found = {
+            (int(t.month), int(t.day), int(t.hour))
+            for t in selected.indexes["time"]
+        }
+        wanted = {
+            (month, day, hour)
+            for month in EVAL_MONTHS
+            for day in EVAL_DAYS
+            for hour in EVAL_HOURS
+        }
+        raise ValueError(
+            "ERA5 reference is incomplete for evaluation v2: "
+            f"found {len(found)}/{len(wanted)} timestamps; "
+            f"first missing={sorted(wanted - found)[:4]}"
+        )
+    return selected.compute()
+
 
 def _layer_thickness(
     reference,
@@ -66,12 +105,12 @@ def score(
     raw_dir: Path | None = None,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
-    ref = artifact.read(reference_path)
+    ref = _spatial_reference(artifact.read(reference_path))
     pred = artifact.read(synth_path).compute()
-    ref_sp = ref.isel(time=slice(0, None, SPATIAL_STRIDE_H)).compute()
+    ref_sp = ref
     half_a, half_b = split(ref)
-    a_sp = half_a.isel(time=slice(0, None, SPATIAL_STRIDE_H)).compute()
-    b_sp = half_b.isel(time=slice(0, None, SPATIAL_STRIDE_H)).compute()
+    a_sp = half_a.compute()
+    b_sp = half_b.compute()
     dz, dz_description = _layer_thickness(
         ref, dz_file=dz_file, dz_source=dz_source, raw_dir=raw_dir
     )
