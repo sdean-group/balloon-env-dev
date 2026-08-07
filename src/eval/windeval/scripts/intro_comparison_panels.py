@@ -1,7 +1,7 @@
 """Poster intro comparison: ERA5 vs conditional diffusion vs BLE-VAE.
 
-Renders three borderless panels in one shared style (speed on the trimmed-viridis
-ramp + sparse white direction arrows):
+Renders three borderless 4:3 panels in the poster's established style (speed on
+full-range viridis + thin white arrows whose length is proportional to speed):
 
 - ERA5 and the diffusion sample share ONE color scale so brightness is comparable;
   they are the same window, timestamp and level, so the comparison is honest.
@@ -44,17 +44,33 @@ def bright_cmap(lo: float = 0.26):
 
 
 def render_panel(u, v, out: Path, *, vmin, vmax, cmap, arrow_step: int,
-                 px: int = 1600) -> None:
-    """One borderless square: speed field + sparse white arrows, no text."""
-    fig = plt.figure(figsize=(px / 300, px / 300), dpi=300, facecolor="white")
+                 px: int = 1600, aspect: float = 4 / 3) -> None:
+    """One borderless landscape panel in the poster's established style.
+
+    Matches the original intro panels: full-range colormap for contrast, thin
+    white arrows whose LENGTH is proportional to wind speed (the speed is thus
+    double-encoded, colour + length, like the existing figures), and a 4:3 crop
+    centred vertically. The strip figures keep their brighter square style; these
+    must sit beside the poster's existing comparison panels.
+    """
+    H, W = u.shape
+    ch = int(round(W / aspect))
+    if ch < H:                          # centred vertical crop to the target aspect
+        r0 = (H - ch) // 2
+        u, v = u[r0:r0 + ch], v[r0:r0 + ch]
+        H = ch
+    fig = plt.figure(figsize=(px / 300, px / aspect / 300), dpi=300,
+                     facecolor="white")
     ax = fig.add_axes([0, 0, 1, 1])
     ax.imshow(np.hypot(u, v), cmap=cmap, vmin=vmin, vmax=vmax,
               interpolation="bilinear")
-    H, W = u.shape
     yy, xx = np.mgrid[arrow_step // 2:H:arrow_step, arrow_step // 2:W:arrow_step]
     # -v: matplotlib's image y-axis points down, wind v points north.
+    # scale in xy units: an arrow at vmax spans ~1.6 grid cells, so length tracks
+    # speed and slow regions get visibly short arrows instead of uniform glyphs.
     ax.quiver(xx, yy, u[yy, xx], -v[yy, xx], color="white",
-              width=0.008, headwidth=3.5, headlength=4.5)
+              angles="xy", scale_units="xy", scale=vmax / (1.6 * arrow_step),
+              width=0.0035, headwidth=3.2, headlength=4.0, headaxislength=3.5)
     ax.set_axis_off()
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=300, facecolor="white", pad_inches=0)
@@ -66,7 +82,8 @@ def render_panel(u, v, out: Path, *, vmin, vmax, cmap, arrow_step: int,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--outdir", default="poster/figures")
-    ap.add_argument("--cmap-lo", type=float, default=0.26)
+    ap.add_argument("--cmap-lo", type=float, default=0.0,
+                    help="0.0 = full viridis, matching the existing poster panels")
     args = ap.parse_args()
     outdir = Path(args.outdir)
     cmap = bright_cmap(args.cmap_lo)
@@ -93,9 +110,9 @@ def main() -> None:
           f"{int(z['levels'][LEVEL])}), shared scale 0..{vmax:.1f} m/s")
 
     render_panel(ru, rv, outdir / "intro_pair_era5.png",
-                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=8)
+                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=7)
     render_panel(du, dv, outdir / "intro_pair_diffusion.png",
-                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=8)
+                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=7)
 
     # --- BLE-VAE: own scale (different domain), identical treatment ----------
     ble = xr.open_zarr(DATA / f"ble_vae_{BLE_SEED}.zarr",
