@@ -3,11 +3,12 @@
 Renders three borderless 4:3 panels in the poster's established style (speed on
 full-range viridis + thin white arrows whose length is proportional to speed):
 
-- ERA5 and the diffusion sample share ONE color scale so brightness is comparable;
-  they are the same window, timestamp and level, so the comparison is honest.
-- BLE-VAE is a different domain (SF 21x21, hPa levels), so it gets its own scale;
-  everything else about the rendering is identical, so what looks bad is the model,
-  not the treatment.
+- Every panel gets its own 2-98% percentile stretch (the poster's convention), so
+  COLOR IS NOT COMPARABLE ACROSS PANELS; captions must not imply it is. The ERA5
+  and diffusion panels are still the same window, timestamp and level, so the
+  spatial-pattern comparison is honest.
+- BLE-VAE (different domain: SF 21x21, hPa levels) gets identical treatment, so
+  what looks bad is the model, not the rendering.
 
 The diffusion panel is chosen from the benchmarked 4yr-250k cache: every
 (condition, seed, frame, level) was scored against the ERA5 truth at the same
@@ -59,18 +60,23 @@ def render_panel(u, v, out: Path, *, vmin, vmax, cmap, arrow_step: int,
         r0 = (H - ch) // 2
         u, v = u[r0:r0 + ch], v[r0:r0 + ch]
         H = ch
+    speed = np.hypot(u, v)
+    if vmin is None or vmax is None:    # per-panel percentile stretch, as in the
+        vmin, vmax = np.percentile(speed, [2, 98])   # poster's original panels
     fig = plt.figure(figsize=(px / 300, px / aspect / 300), dpi=300,
                      facecolor="white")
     ax = fig.add_axes([0, 0, 1, 1])
-    ax.imshow(np.hypot(u, v), cmap=cmap, vmin=vmin, vmax=vmax,
-              interpolation="bilinear")
+    # nearest: keep each grid cell crisp — the original panels show the raw grid
+    # texture; bilinear smoothing is what read as "blended".
+    ax.imshow(speed, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
     yy, xx = np.mgrid[arrow_step // 2:H:arrow_step, arrow_step // 2:W:arrow_step]
     # -v: matplotlib's image y-axis points down, wind v points north.
-    # scale in xy units: an arrow at vmax spans ~1.6 grid cells, so length tracks
-    # speed and slow regions get visibly short arrows instead of uniform glyphs.
+    # scale in xy units: the fastest arrow spans ~0.9 of the arrow spacing, so
+    # arrows never overlap; length still tracks speed.
+    amax = max(np.hypot(u[yy, xx], v[yy, xx]).max(), 1e-6)
     ax.quiver(xx, yy, u[yy, xx], -v[yy, xx], color="white",
-              angles="xy", scale_units="xy", scale=vmax / (1.6 * arrow_step),
-              width=0.0035, headwidth=3.2, headlength=4.0, headaxislength=3.5)
+              angles="xy", scale_units="xy", scale=amax / (0.9 * arrow_step),
+              width=0.003, headwidth=3.2, headlength=4.0, headaxislength=3.3)
     ax.set_axis_off()
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=300, facecolor="white", pad_inches=0)
@@ -103,16 +109,13 @@ def main() -> None:
     rv = ref["v"].isel(time=ti, level=LEVEL, y=slice(y0, y0 + 64),
                        x=slice(x0, x0 + 64)).values
 
-    vmin = 0.0
-    vmax = max(np.percentile(np.hypot(ru, rv), 99),
-               np.percentile(np.hypot(du, dv), 99))
-    print(f"pair: {t} level_idx {LEVEL} (model level "
-          f"{int(z['levels'][LEVEL])}), shared scale 0..{vmax:.1f} m/s")
+    print(f"pair: {t} level_idx {LEVEL} (model level {int(z['levels'][LEVEL])}), "
+          f"per-panel 2-98% stretch (poster convention)")
 
     render_panel(ru, rv, outdir / "intro_pair_era5.png",
-                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=7)
+                 vmin=None, vmax=None, cmap=cmap, arrow_step=7)
     render_panel(du, dv, outdir / "intro_pair_diffusion.png",
-                 vmin=vmin, vmax=vmax, cmap=cmap, arrow_step=7)
+                 vmin=None, vmax=None, cmap=cmap, arrow_step=7)
 
     # --- BLE-VAE: own scale (different domain), identical treatment ----------
     ble = xr.open_zarr(DATA / f"ble_vae_{BLE_SEED}.zarr",
@@ -123,7 +126,7 @@ def main() -> None:
     print(f"ble_vae: seed {BLE_SEED}, t {BLE_T}, "
           f"{float(ble.level.values[BLE_L]):.0f} hPa, scale 0..{bmax:.1f} m/s")
     render_panel(bu, bv, outdir / "intro_pair_blevae.png",
-                 vmin=0.0, vmax=bmax, cmap=cmap, arrow_step=3)
+                 vmin=None, vmax=None, cmap=cmap, arrow_step=3)
 
 
 if __name__ == "__main__":
