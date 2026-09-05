@@ -44,7 +44,13 @@ def _store(tmp_path: Path) -> tuple[Path, np.ndarray, np.ndarray]:
         },
     )
     path = tmp_path / "tiny.zarr"
-    ds.to_zarr(path, mode="w", consolidated=False)
+    # Pin the v2 layout explicitly: data._open_zarr reads zarr_format=2, and zarr>=3 writes
+    # v3 by default, which makes this fixture unreadable on a zarr 3 environment. Older
+    # xarray releases do not accept the kwarg, hence the fallback (same as _open_zarr).
+    try:
+        ds.to_zarr(path, mode="w", consolidated=False, zarr_format=2)
+    except TypeError:
+        ds.to_zarr(path, mode="w", consolidated=False)
     return path, u, v
 
 
