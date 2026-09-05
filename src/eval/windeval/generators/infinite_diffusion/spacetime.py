@@ -410,6 +410,7 @@ class SpaceTimeSampler:
         self.device = torch.device(device)
         ck = torch.load(Path(ckpt_path), map_location=self.device, weights_only=False)
         cfg = ck["cfg"]
+        self.cfg = dict(cfg)
         st = ck["stats"]
         self.stats = NormStats(st["mean_u"], st["std_u"], st["mean_v"], st["std_v"], st["levels"])
         self.n_levels = self.stats.n_levels
@@ -499,28 +500,56 @@ class SpaceTimeSampler:
                  / self.model.coarse_scale) if self.coarse_residual else full
         return d
 
+    def sigma_schedule(self, *, device=None, dtype=torch.float64) -> torch.Tensor:
+        return edm_sigma_schedule(
+            self.num_steps,
+            self.sigma_min,
+            self.sigma_max,
+            device=device or self.device,
+            dtype=dtype,
+        )
+
     @torch.no_grad()
-    def _heun_block(self, x_unit: torch.Tensor,
-                    cond: torch.Tensor | None = None,
-                    tfeat: torch.Tensor | None = None,
-                    coarse: torch.Tensor | None = None,
-                    churn_seed: int = 0) -> torch.Tensor:
-        """EDM Heun sampler over a block. ``s_churn == 0`` (default) is the deterministic
-        probability-flow ODE — bitwise-identical to the pre-churn implementation. With
-        ``s_churn > 0`` it is Karras Alg. 2 (same machinery as trained.TrainedWindowDenoiser):
-        eligible steps bump sigma by gamma and inject matching noise, recovering marginal
-        variance the ODE loses. The churn stream is seeded from ``churn_seed`` (xor'd so it
-        never collides with the init-noise stream of the same seed) — deterministic per block.
+    def _heun_segment(self, x: torch.Tensor, *, start_step: int, end_step: int,
+                      unit_noise: bool = False,
+                      cond: torch.Tensor | None = None,
+                      tfeat: torch.Tensor | None = None,
+                      coarse: torch.Tensor | None = None,
+                      churn_seed: int = 0) -> torch.Tensor:
+        """Advance steps ``[start_step, end_step)`` of the EDM Heun trajectory over a block.
+
+        The segment form is what the 4-D InfiniteDiffusion wrapper (``spacetime_infinite``)
+        uses for its T=2 split: run to ``split_step``, blend overlapping intermediate states,
+        then continue from ``split_step`` on the blended field. ``unit_noise=True`` scales a
+        unit-Gaussian input to ``sigma_max`` (only valid from step 0); a continuation passes
+        the intermediate noisy state as-is.
+
+        ``s_churn == 0`` (default) is the deterministic probability-flow ODE — bitwise-
+        identical to the pre-churn implementation. With ``s_churn > 0`` it is Karras Alg. 2
+        (same machinery as trained.TrainedWindowDenoiser): eligible steps bump sigma by gamma
+        and inject matching noise, recovering marginal variance the ODE loses. The churn
+        stream is seeded from ``churn_seed`` (xor'd so it never collides with the init-noise
+        stream of the same seed) — deterministic per block and per segment.
+
+        Every denoiser evaluation goes through :meth:`_denoise`, which applies classifier-free
+        guidance and the coarse consistency projection when the checkpoint is coarse-conditioned.
         """
-        sig = edm_sigma_schedule(self.num_steps, self.sigma_min, self.sigma_max,
-                                 device=x_unit.device, dtype=x_unit.dtype)
-        x = x_unit * sig[0]
+        if not 0 <= start_step < end_step <= self.num_steps:
+            raise ValueError(
+                f"expected 0 <= start_step < end_step <= {self.num_steps}; "
+                f"got {start_step}, {end_step}"
+            )
+        sig = self.sigma_schedule(device=x.device, dtype=x.dtype)
+        if unit_noise:
+            if start_step != 0:
+                raise ValueError("unit_noise is only valid for a segment starting at step 0")
+            x = x * sig[0]
         B = x.shape[0]
         gen = None
         if self.s_churn > 0:
             gen = torch.Generator(device="cpu").manual_seed(int(churn_seed) ^ 0x5F5E1)
         gamma_base = min(self.s_churn / self.num_steps, 2.0 ** 0.5 - 1.0)
-        for i in range(self.num_steps):
+        for i in range(start_step, end_step):
             s_cur, s_next = sig[i], sig[i + 1]
             gamma = (gamma_base if (gen is not None and self.s_min <= float(s_cur) <= self.s_max)
                      else 0.0)
@@ -540,6 +569,24 @@ class SpaceTimeSampler:
                 x_next = x + (s_next - s_hat) * 0.5 * (d + d2)
             x = x_next
         return x
+
+    @torch.no_grad()
+    def _heun_block(self, x_unit: torch.Tensor,
+                    cond: torch.Tensor | None = None,
+                    tfeat: torch.Tensor | None = None,
+                    coarse: torch.Tensor | None = None,
+                    churn_seed: int = 0) -> torch.Tensor:
+        """Full trajectory (unit noise -> clean block) = one segment over every step."""
+        return self._heun_segment(
+            x_unit,
+            start_step=0,
+            end_step=self.num_steps,
+            unit_noise=True,
+            cond=cond,
+            tfeat=tfeat,
+            coarse=coarse,
+            churn_seed=churn_seed,
+        )
 
     def _condition(self, hw: tuple[int, int], lat, lon, times
                    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:

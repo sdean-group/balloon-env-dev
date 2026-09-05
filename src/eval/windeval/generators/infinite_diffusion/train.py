@@ -6,7 +6,8 @@ EDM loss weighting live in ``net.EDMPrecond.loss``; this module is the harness a
 
 Designed to be launched as a cluster (SLURM) job: a single CLI entrypoint, deterministic
 config, and checkpoint/resume so a pre-empted job picks up where it left off. The EMA
-weights are what inference uses.
+weights are what inference uses. On SIGUSR1 (Slurm's time-limit warning) the loop
+checkpoints after its current step and exits with code 75 so the batch script can requeue.
 
 Usage
 -----
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,11 +49,37 @@ except ImportError:  # pragma: no cover - standalone script path
     from spacetime import EDMPrecondSpaceTime
 
 
+_STOP_REQUESTED = False
+_REQUEUE_REQUIRED = False
+
+
+def _request_graceful_stop(signum, _frame) -> None:
+    """Ask the training loop to checkpoint after its current optimizer step."""
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+    print(f"[train] received signal {signum}; checkpointing after the current step", flush=True)
+
+
+def install_signal_handlers() -> None:
+    """Install the Slurm time-limit handler without affecting imported/test usage."""
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, _request_graceful_stop)
+
+
 # --------------------------------------------------------------------------- config
 @dataclass
 class TrainConfig:
     data_path: str | list = "src/eval/windeval/data/era5_real.zarr"   # one zarr or a list
     data_dtype: str = "float32"    # in-RAM storage; "float16" halves RAM for multi-year sets
+    # stats_path: precomputed NormStats (.npz, e.g. from data.compute_zarr_stats). Required
+    # with lazy_data (no full pass over the store is made); optional otherwise.
+    stats_path: str | None = None
+    # lazy_data: read each block from the store on demand instead of holding the arrays in
+    # RAM — for multi-year stores that cannot fit. Slower per item; use more workers.
+    lazy_data: bool = False
+    # val_data_path: a held-out store scored every val_every steps with fixed batches; the
+    # best EMA validation loss is written to best.pt (spacetime models only).
+    val_data_path: str | None = None
     crop: int = 64
     levels: tuple[int, int] | None = (49, 66)
     augment: bool = True
@@ -100,11 +128,10 @@ class TrainConfig:
     coarse_dropout: float = 0.0
 
     # --- Weights & Biases (optional; "" = off, so every existing config is unaffected) ---
-    # wandb_mode defaults to "offline" because Kahan COMPUTE nodes are not assumed to have
-    # outbound internet — an online init would block or crash a 30 h run at step 0. Offline
-    # writes to wandb/ in out_dir; sync afterwards FROM THE LOGIN NODE with
-    #   .venv-idiff/bin/wandb sync runs/<out_dir>/wandb/offline-run-*
-    # Set wandb_mode: online only once the compute node is confirmed to have egress.
+    # wandb_mode defaults to "offline": compute nodes are not assumed to have outbound
+    # internet, and an online init would block or crash a 30 h run at step 0. Offline writes
+    # to wandb/ in out_dir; sync afterwards from a machine with egress:
+    #   wandb sync runs/<out_dir>/wandb/offline-run-*
     wandb_project: str = ""
     wandb_mode: str = "offline"          # offline | online | disabled
     wandb_run_name: str = ""             # defaults to out_dir's basename
@@ -126,9 +153,11 @@ class TrainConfig:
     ckpt_every: int = 5_000
     # step_N.pt snapshot cadence; 0 = same as ckpt_every. latest.pt still updates every
     # ckpt_every (crash-resume granularity) — snapshots are the ~641 MB/each keepers, and
-    # on Kahan's ~100 GB quota a 200k-step run at snapshot=ckpt cadence is a quota killer.
+    # on a ~100 GB quota a 200k-step run at snapshot=ckpt cadence is a quota killer.
     snapshot_every: int = 0
     log_every: int = 100
+    val_every: int = 2_000
+    val_batches: int = 8
     resume: bool = True            # auto-resume from out_dir/latest.pt if present
     device: str = "auto"           # auto | cpu | mps | cuda
     seed: int = 0
@@ -206,7 +235,8 @@ class EMA:
 
 # --------------------------------------------------------------------------- checkpoint
 def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: TrainConfig,
-              coord_norm: dict | None = None, wandb_id: str | None = None) -> None:
+              coord_norm: dict | None = None, wandb_id: str | None = None,
+              best_val_loss: float | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "model": model.state_dict(),
@@ -216,12 +246,16 @@ def save_ckpt(path: Path, *, model, ema, opt, step, stats: NormStats, cfg: Train
         "stats": {"mean_u": stats.mean_u, "std_u": stats.std_u,
                   "mean_v": stats.mean_v, "std_v": stats.std_v, "levels": stats.levels},
         "cfg": cfg.__dict__,
+        "best_val_loss": best_val_loss,
     }
     if coord_norm is not None:
         payload["coord_norm"] = coord_norm
     if wandb_id is not None:
         payload["wandb_id"] = wandb_id      # so a resumed leg re-attaches to ONE curve
-    torch.save(payload, path)
+    # write-then-rename so a kill mid-write (wall limit, quota) never leaves a torn latest.pt
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(path)
 
 
 def init_wandb(cfg: TrainConfig, out: Path, resume_id: str | None):
@@ -293,8 +327,59 @@ def build_model(cfg: TrainConfig, n_channels: int):
     )
 
 
+def _batch_loss(model, batch, cfg: TrainConfig, device: torch.device) -> torch.Tensor:
+    """Unpack one loader batch for the configured mode and return the EDM loss."""
+    if cfg.conditional:
+        if cfg.coarse_factor:
+            x0, cond, tfeat, coarse = batch        # + block-meaned coarse field
+            coarse = coarse.to(device, non_blocking=True)
+        else:
+            x0, cond, tfeat = batch                # (block, coords, time features)
+            coarse = None
+        return model.loss(x0.to(device, non_blocking=True),
+                          cond=cond.to(device, non_blocking=True),
+                          tfeat=tfeat.to(device, non_blocking=True),
+                          coarse=coarse, coarse_dropout=cfg.coarse_dropout)
+    if cfg.paired:
+        cond, x0 = batch                           # (frame_t, frame_{t+stride})
+        return model.loss(x0.to(device, non_blocking=True),
+                          cond=cond.to(device, non_blocking=True))
+    x0 = batch.to(device, non_blocking=True)       # static (4D) or spacetime (5D block)
+    return model.loss(x0)
+
+
+@torch.no_grad()
+def validation_loss(model, loader: DataLoader, cfg: TrainConfig,
+                    device: torch.device) -> float:
+    """Fixed-seed native-window denoising loss for checkpoint selection."""
+    was_training = model.training
+    model.eval()
+    cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] \
+        if device.type == "cuda" else []
+    losses = []
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(cfg.seed + 10_000_019)
+        for batch in loader:
+            losses.append(float(_batch_loss(model, batch, cfg, device)))
+    model.train(was_training)
+    return sum(losses) / len(losses)
+
+
+def _spacetime_dataset(cfg: TrainConfig, path, *, stats, length: int, seed: int):
+    """The spacetime dataset for the configured mode (plain / conditional / coarse)."""
+    kw = dict(crop=cfg.crop, levels=cfg.levels, n_frames=cfg.n_frames,
+              frame_stride=cfg.frame_stride, stats=stats, length=length, seed=seed,
+              storage_dtype=cfg.data_dtype, lazy=cfg.lazy_data)
+    if cfg.conditional and cfg.coarse_factor:
+        return WindCoarseCondSpaceTimeDataset(path, coarse_factor=cfg.coarse_factor, **kw)
+    if cfg.conditional:
+        return WindCondSpaceTimeDataset(path, **kw)
+    return WindSpaceTimeDataset(path, augment=cfg.augment, **kw)
+
+
 # --------------------------------------------------------------------------- train
 def train(cfg: TrainConfig) -> Path:
+    global _REQUEUE_REQUIRED
     # line-buffer stdout so step logs stream live to the SLURM .out file (which is block-
     # buffered by default when stdout is a file, making a running job look frozen).
     try:
@@ -320,6 +405,11 @@ def train(cfg: TrainConfig) -> Path:
         raise ValueError("coarse_residual / coarse_dropout require coarse_factor > 0")
     if not 0.0 <= cfg.coarse_dropout < 1.0:
         raise ValueError(f"coarse_dropout must be in [0,1), got {cfg.coarse_dropout}")
+    stats = NormStats.load(cfg.stats_path) if cfg.stats_path else None
+    if cfg.lazy_data and stats is None:
+        raise ValueError("lazy_data=True requires stats_path computed from training data")
+    if cfg.lazy_data and not cfg.spacetime:
+        raise ValueError("lazy_data is supported for spacetime training only")
 
     # Peek the resume step BEFORE building the dataset: the DataLoader restarts at idx 0
     # on every (re)start and items are idx-seeded, so with an unchanged seed a resumed
@@ -327,55 +417,52 @@ def train(cfg: TrainConfig) -> Path:
     # leg re-saw leg 1's crops — a large silent cut to effective sample diversity).
     # Shifting the seed by start_step gives each leg a fresh deterministic stream.
     start_step = 0
+    best_val_loss = float("inf")
     latest = out / "latest.pt"
     ck = None
     if cfg.resume and latest.exists():
         ck = torch.load(latest, map_location="cpu", weights_only=False)
         start_step = int(ck["step"])
+        if ck.get("best_val_loss") is not None:
+            best_val_loss = float(ck["best_val_loss"])
     data_seed = cfg.seed + start_step
     length = cfg.batch_size * max(1, cfg.n_steps - start_step)
     coord_norm = None
-    if cfg.conditional:
-        ds_kw = dict(crop=cfg.crop, levels=cfg.levels, n_frames=cfg.n_frames,
-                     frame_stride=cfg.frame_stride, length=length, seed=data_seed,
-                     storage_dtype=cfg.data_dtype)
-        if cfg.coarse_factor:
-            dataset = WindCoarseCondSpaceTimeDataset(cfg.data_path,
-                                                     coarse_factor=cfg.coarse_factor, **ds_kw)
+    if cfg.spacetime:
+        dataset = _spacetime_dataset(cfg, cfg.data_path, stats=stats, length=length,
+                                     seed=data_seed)
+        if cfg.conditional:
+            coord_norm = dataset.coord_norm.to_dict()
+            mode_note = (f"  | CONDITIONAL SPACETIME (τ={cfg.n_frames}, stride {cfg.frame_stride}, "
+                         f"{len(dataset.block_starts)} block starts, coord_norm={coord_norm}"
+                         + (f", COARSE f={cfg.coarse_factor} -> "
+                            f"{cfg.crop // cfg.coarse_factor}²" if cfg.coarse_factor else "") + ")")
+            if cfg.coarse_factor and cfg.coarse_residual and not cfg.coarse_scale:
+                # Measured once here, then written into cfg so it lands in every checkpoint.
+                # A resumed leg re-measures: the dataset seed shifts with start_step, so the
+                # sample differs — but the estimate is over 256 blocks x 4 frames x 36
+                # channels x 64², i.e. ~1.5e8 values, so the leg-to-leg spread is negligible.
+                cfg.coarse_scale = measure_residual_scale(dataset)
+                mode_note += (f"\n[train] residual parameterization ON: coarse_scale="
+                              f"{cfg.coarse_scale:.4f} (measured over 256 blocks); "
+                              f"diffusing (x - upsample(coarse)) / coarse_scale"
+                              + (f"; coarse_dropout={cfg.coarse_dropout} (CFG enabled)"
+                                 if cfg.coarse_dropout else ""))
         else:
-            dataset = WindCondSpaceTimeDataset(cfg.data_path, **ds_kw)
-        coord_norm = dataset.coord_norm.to_dict()
-        mode_note = (f"  | CONDITIONAL SPACETIME (τ={cfg.n_frames}, stride {cfg.frame_stride}, "
-                     f"{len(dataset.block_starts)} block starts, coord_norm={coord_norm}"
-                     + (f", COARSE f={cfg.coarse_factor} -> "
-                        f"{cfg.crop // cfg.coarse_factor}²" if cfg.coarse_factor else "") + ")")
-        if cfg.coarse_factor and cfg.coarse_residual and not cfg.coarse_scale:
-            # Measured once here, then written into cfg so it lands in every checkpoint.
-            # A resumed leg re-measures: the dataset seed shifts with start_step, so the
-            # sample differs — but the estimate is over 256 blocks x 4 frames x 36
-            # channels x 64², i.e. ~1.5e8 values, so the leg-to-leg spread is negligible.
-            cfg.coarse_scale = measure_residual_scale(dataset)
-            mode_note += (f"\n[train] residual parameterization ON: coarse_scale="
-                          f"{cfg.coarse_scale:.4f} (measured over 256 blocks); "
-                          f"diffusing (x - upsample(coarse)) / coarse_scale"
-                          + (f"; coarse_dropout={cfg.coarse_dropout} (CFG enabled)"
-                             if cfg.coarse_dropout else ""))
-    elif cfg.spacetime:
-        dataset = WindSpaceTimeDataset(cfg.data_path, crop=cfg.crop, levels=cfg.levels,
-                                       n_frames=cfg.n_frames, frame_stride=cfg.frame_stride,
-                                       augment=cfg.augment, length=length, seed=data_seed,
-                                       storage_dtype=cfg.data_dtype)
-        mode_note = (f"  | SPACETIME (τ={cfg.n_frames}, stride {cfg.frame_stride}, "
-                     f"{len(dataset.block_starts)} block starts)")
+            mode_note = (f"  | SPACETIME (τ={cfg.n_frames}, stride {cfg.frame_stride}, "
+                         f"{len(dataset.block_starts)} block starts)")
+        if cfg.lazy_data:
+            mode_note += "  | LAZY (blocks read from the store on demand)"
     elif cfg.paired:
         dataset = WindPairDataset(cfg.data_path, crop=cfg.crop, levels=cfg.levels,
-                                  frame_stride=cfg.frame_stride, augment=cfg.augment,
-                                  length=length, seed=data_seed)
+                                  frame_stride=cfg.frame_stride, stats=stats,
+                                  augment=cfg.augment, length=length, seed=data_seed)
         mode_note = (f"  | PAIRED (stride {cfg.frame_stride}, "
                      f"{len(dataset.pair_starts)} pair starts)")
     else:
         dataset = WindCropDataset(cfg.data_path, crop=cfg.crop, levels=cfg.levels,
-                                  augment=cfg.augment, length=length, seed=data_seed)
+                                  stats=stats, augment=cfg.augment, length=length,
+                                  seed=data_seed)
         mode_note = ""
     stats = dataset.stats
     stats.save(out / "norm_stats.npz")
@@ -384,7 +471,22 @@ def train(cfg: TrainConfig) -> Path:
 
     loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False,
                         num_workers=cfg.num_workers, drop_last=True,
-                        pin_memory=(device.type == "cuda"))
+                        pin_memory=(device.type == "cuda"),
+                        persistent_workers=(cfg.num_workers > 0))
+
+    val_loader = None
+    if cfg.val_data_path:
+        if not cfg.spacetime:
+            raise ValueError("validation data is currently supported for spacetime training")
+        val_dataset = _spacetime_dataset(cfg, cfg.val_data_path, stats=stats,
+                                         length=cfg.batch_size * cfg.val_batches,
+                                         seed=cfg.seed + 1)
+        if not cfg.conditional:
+            val_dataset.augment = False
+        val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False,
+                                num_workers=0, drop_last=True,
+                                pin_memory=(device.type == "cuda"))
+        print(f"[train] validation: {cfg.val_data_path}  ({cfg.val_batches} fixed batches)")
 
     model = build_model(cfg, dataset.n_channels).to(device)
     ema = EMA(model, cfg.ema_decay)
@@ -400,6 +502,10 @@ def train(cfg: TrainConfig) -> Path:
     if ck is not None:
         del ck
 
+    def checkpoint(path: Path, step: int) -> None:
+        save_ckpt(path, model=model, ema=ema, opt=opt, step=step, stats=stats, cfg=cfg,
+                  coord_norm=coord_norm, wandb_id=wb_id, best_val_loss=best_val_loss)
+
     model.train()
     t0 = time.time()
     running = 0.0
@@ -407,34 +513,12 @@ def train(cfg: TrainConfig) -> Path:
     for batch in loader:
         if step >= cfg.n_steps:
             break
-        tfeat = coarse = None
-        if cfg.conditional:
-            if cfg.coarse_factor:
-                x0, cond, tfeat, coarse = batch        # + block-meaned coarse field
-                coarse = coarse.to(device, non_blocking=True)
-            else:
-                x0, cond, tfeat = batch                # (block, coords, time features)
-            x0 = x0.to(device, non_blocking=True)
-            cond = cond.to(device, non_blocking=True)
-            tfeat = tfeat.to(device, non_blocking=True)
-        elif cfg.paired:
-            cond, x0 = batch                                  # (frame_t, frame_{t+stride})
-            cond = cond.to(device, non_blocking=True)
-            x0 = x0.to(device, non_blocking=True)
-        else:                                                 # static (4D) or spacetime (5D block)
-            cond, x0 = None, batch.to(device, non_blocking=True)
         lr = cfg.lr * min(1.0, (step + 1) / max(1, cfg.warmup_steps))
         for g in opt.param_groups:
             g["lr"] = lr
 
         opt.zero_grad(set_to_none=True)
-        if cfg.conditional:
-            loss = model.loss(x0, cond=cond, tfeat=tfeat, coarse=coarse,
-                              coarse_dropout=cfg.coarse_dropout)
-        elif cfg.spacetime:
-            loss = model.loss(x0)
-        else:
-            loss = model.loss(x0, cond=cond)
+        loss = _batch_loss(model, batch, cfg, device)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
@@ -453,19 +537,29 @@ def train(cfg: TrainConfig) -> Path:
                 wb_run.log({"loss": mean_loss, "lr": lr, "it_per_s": rate}, step=step)
             running = 0.0
             t0 = time.time()
+        if val_loader is not None and step % cfg.val_every == 0:
+            val_loss = validation_loss(ema.shadow, val_loader, cfg, device)
+            print(f"[train] validation @ step {step}: EMA loss {val_loss:.6f}")
+            if wb_run is not None:
+                wb_run.log({"val_loss": val_loss}, step=step)
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                checkpoint(out / "best.pt", step)
+                print(f"[train] new best validation checkpoint @ step {step}")
         if step % cfg.ckpt_every == 0:
-            save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats,
-                      cfg=cfg, coord_norm=coord_norm, wandb_id=wb_id)
+            checkpoint(latest, step)
             snap = cfg.snapshot_every or cfg.ckpt_every
             if step % snap == 0:
-                save_ckpt(out / f"step_{step}.pt", model=model, ema=ema, opt=opt,
-                          step=step, stats=stats, cfg=cfg, coord_norm=coord_norm,
-                          wandb_id=wb_id)
+                checkpoint(out / f"step_{step}.pt", step)
             print(f"[train] checkpoint @ step {step}")
+        if _STOP_REQUESTED:
+            print(f"[train] graceful stop requested @ step {step}", flush=True)
+            break
 
-    save_ckpt(latest, model=model, ema=ema, opt=opt, step=step, stats=stats,
-              cfg=cfg, coord_norm=coord_norm, wandb_id=wb_id)
-    print(f"[train] done @ step {step} -> {latest}")
+    checkpoint(latest, step)
+    state = "paused" if _STOP_REQUESTED and step < cfg.n_steps else "done"
+    _REQUEUE_REQUIRED = state == "paused"
+    print(f"[train] {state} @ step {step} -> {latest}")
     if wb_run is not None:
         wb_run.finish()
     return latest
@@ -477,7 +571,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--set", nargs="*", default=[], help="overrides like train.n_steps=500 device=cpu")
     args = ap.parse_args(argv)
     cfg = load_config(args.config, args.set)
+    install_signal_handlers()
     train(cfg)
+    if _REQUEUE_REQUIRED:
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":

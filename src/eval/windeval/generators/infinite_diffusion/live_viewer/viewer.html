@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InfiniteDiffusion Live</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101313;
+      --panel: #191d1d;
+      --panel-strong: #222727;
+      --line: #36403e;
+      --text: #eef4f1;
+      --muted: #a3aeaa;
+      --wind: #68d6c2;
+      --agent: #ffcc66;
+      --active: #7fb1f2;
+      --danger: #ff7777;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      letter-spacing: 0;
+    }
+    button, select, input { font: inherit; }
+    button, select {
+      min-height: 36px;
+      color: var(--text);
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 7px 11px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--muted); }
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--active);
+      outline-offset: 2px;
+    }
+    button.primary {
+      color: var(--bg);
+      background: var(--text);
+      border-color: var(--text);
+    }
+    .app {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      width: 100%;
+      height: 100%;
+    }
+    header {
+      position: relative;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 58px;
+      padding: 10px 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 9px;
+      white-space: nowrap;
+    }
+    .brand strong { font-weight: 500; }
+    .brand span { color: var(--muted); }
+    .controls {
+      display: flex;
+      align-items: end;
+      justify-content: flex-end;
+      gap: 9px;
+      min-width: 0;
+    }
+    label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    select { padding: 5px 28px 5px 8px; }
+    input[type="range"] {
+      width: 130px;
+      accent-color: var(--wind);
+    }
+    main {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #scene {
+      position: absolute;
+      inset: 0;
+    }
+    #scene canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .hud {
+      position: absolute;
+      z-index: 3;
+      top: 12px;
+      left: 12px;
+      display: grid;
+      gap: 8px;
+      width: min(290px, calc(100% - 24px));
+      pointer-events: none;
+    }
+    .panel {
+      padding: 10px 11px;
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+      border-radius: 6px;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .status-dot.ready { background: var(--wind); }
+    .status-dot.generating { background: var(--agent); }
+    .status-dot.error { background: var(--danger); }
+    .metrics {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px 12px;
+      margin-top: 9px;
+      color: var(--muted);
+    }
+    .metrics strong {
+      color: var(--text);
+      font-weight: 500;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .generation {
+      display: grid;
+      gap: 7px;
+    }
+    .generation code {
+      overflow-wrap: anywhere;
+      color: var(--text);
+    }
+    .legend {
+      position: absolute;
+      z-index: 3;
+      right: 12px;
+      bottom: 12px;
+      display: grid;
+      gap: 6px;
+      padding: 9px 10px;
+      color: var(--muted);
+      background: color-mix(in srgb, var(--panel) 90%, transparent);
+      border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+      border-radius: 6px;
+      pointer-events: none;
+    }
+    .legend span {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .swatch {
+      width: 14px;
+      height: 3px;
+      background: var(--wind);
+    }
+    .swatch.agent {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--agent);
+    }
+    .swatch.bounds {
+      height: 9px;
+      background: transparent;
+      border: 1px solid var(--active);
+    }
+    .hint {
+      position: absolute;
+      z-index: 3;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      padding: 6px 9px;
+      color: var(--muted);
+      background: color-mix(in srgb, var(--panel) 88%, transparent);
+      border-radius: 5px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .error-message { color: var(--danger); }
+    @media (max-width: 760px) {
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .controls {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+      .legend { display: none; }
+      .hint { display: none; }
+      .hud { top: 8px; left: 8px; width: calc(100% - 16px); }
+      .generation { display: none; }
+      input[type="range"] { width: 105px; }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <strong>InfiniteDiffusion Live</strong>
+        <span>passive drifter</span>
+      </div>
+      <div class="controls" aria-label="Simulation controls">
+        <button id="play" class="primary" type="button" aria-pressed="true">
+          <span aria-hidden="true">Ⅱ</span>
+          <span>Pause</span>
+        </button>
+        <button id="reset" type="button">
+          <span aria-hidden="true">↺</span>
+          <span>Reset</span>
+        </button>
+        <label>
+          Model level
+          <select id="level" aria-label="Passive agent model level"></select>
+        </label>
+        <label>
+          Speed <span id="speed-label">0.08 h/s</span>
+          <input id="speed" type="range" min="0.01" max="0.30" step="0.01" value="0.08">
+        </label>
+      </div>
+    </header>
+
+    <main>
+      <div id="scene" role="img" aria-label="Three-dimensional generated wind volume with a passive drifting agent and trajectory"></div>
+      <div class="hud">
+        <section class="panel">
+          <div class="status-row">
+            <span class="status">
+              <i id="status-dot" class="status-dot generating" aria-hidden="true"></i>
+              <strong id="status-text">Loading generated field</strong>
+            </span>
+            <span id="timestamp">—</span>
+          </div>
+          <div class="metrics">
+            <span>Agent wind</span><strong id="agent-wind">—</strong>
+            <span>Position</span><strong id="position">—</strong>
+            <span>Model level</span><strong id="model-level">—</strong>
+            <span>Cached chunks</span><strong id="cached">0</strong>
+            <span>Model windows</span><strong id="windows">0</strong>
+          </div>
+        </section>
+        <section class="panel generation">
+          <div class="status-row">
+            <span>Generator</span>
+            <strong id="generation-time">—</strong>
+          </div>
+          <code id="generation-bounds">Waiting for first request</code>
+          <span id="phase-calls">No model evaluations yet</span>
+        </section>
+        <section id="error" class="panel error-message" hidden></section>
+      </div>
+      <div class="legend" aria-label="Legend">
+        <span><i class="swatch agent" aria-hidden="true"></i>Passive agent</span>
+        <span><i class="swatch" aria-hidden="true"></i>Generated wind</span>
+        <span><i class="swatch bounds" aria-hidden="true"></i>Active cached chunk</span>
+      </div>
+      <div class="hint">Orbit: drag · Zoom: scroll · Move agent: double-click field</div>
+    </main>
+  </div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+    const sceneElement = document.getElementById("scene");
+    const playButton = document.getElementById("play");
+    const resetButton = document.getElementById("reset");
+    const levelSelect = document.getElementById("level");
+    const speedInput = document.getElementById("speed");
+    const speedLabel = document.getElementById("speed-label");
+    const statusDot = document.getElementById("status-dot");
+    const statusText = document.getElementById("status-text");
+    const timestampLabel = document.getElementById("timestamp");
+    const agentWindLabel = document.getElementById("agent-wind");
+    const positionLabel = document.getElementById("position");
+    const modelLevelLabel = document.getElementById("model-level");
+    const cachedLabel = document.getElementById("cached");
+    const windowsLabel = document.getElementById("windows");
+    const generationTimeLabel = document.getElementById("generation-time");
+    const generationBoundsLabel = document.getElementById("generation-bounds");
+    const phaseCallsLabel = document.getElementById("phase-calls");
+    const errorPanel = document.getElementById("error");
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x101313);
+    scene.fog = new THREE.Fog(0x101313, 90, 180);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 500);
+    camera.position.set(70, 48, 72);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    sceneElement.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0, 0);
+    controls.maxDistance = 180;
+    controls.minDistance = 24;
+
+    scene.add(new THREE.HemisphereLight(0xd8fff6, 0x202424, 1.4));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    keyLight.position.set(35, 65, 20);
+    scene.add(keyLight);
+
+    const levelGroup = new THREE.Group();
+    const arrowGroup = new THREE.Group();
+    const volumeGroup = new THREE.Group();
+    const trailGroup = new THREE.Group();
+    scene.add(levelGroup, arrowGroup, volumeGroup, trailGroup);
+
+    const agentGroup = new THREE.Group();
+    const balloon = new THREE.Mesh(
+      new THREE.SphereGeometry(1.25, 20, 14),
+      new THREE.MeshStandardMaterial({ color: 0xffcc66, roughness: 0.45 })
+    );
+    balloon.scale.y = 1.18;
+    const gondola = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.42, 0.55),
+      new THREE.MeshStandardMaterial({ color: 0xd9e0dc, roughness: 0.7 })
+    );
+    gondola.position.y = -1.85;
+    const tetherGeometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, -1.05, 0),
+      new THREE.Vector3(0, -1.64, 0)
+    ]);
+    const tether = new THREE.Line(
+      tetherGeometry,
+      new THREE.LineBasicMaterial({ color: 0xd9e0dc })
+    );
+    agentGroup.add(balloon, gondola, tether);
+    scene.add(agentGroup);
+
+    const particleCount = 850;
+    const particlePositions = new Float32Array(particleCount * 3);
+    const particleData = Array.from({ length: particleCount }, () => ({
+      x: 0, y: 0, level: 0, age: 0
+    }));
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute("position", new THREE.BufferAttribute(particlePositions, 3));
+    const particles = new THREE.Points(
+      particleGeometry,
+      new THREE.PointsMaterial({
+        color: 0x8ae5d5,
+        size: 0.42,
+        transparent: true,
+        opacity: 0.72,
+        depthWrite: false
+      })
+    );
+    scene.add(particles);
+
+    let state = null;
+    let field = null;
+    let loadedChunkId = null;
+    let boundsHelper = null;
+    let trailLine = null;
+    let lastFrame = performance.now();
+    let fieldFetchInFlight = false;
+
+    function verticalForLevel(index) {
+      return 13 - index / 17 * 26;
+    }
+
+    function scenePoint(x, y, levelIndex) {
+      if (!field) return new THREE.Vector3();
+      const bounds = field.bounds;
+      const cx = (bounds.x0 + bounds.x1) / 2;
+      const cy = (bounds.y0 + bounds.y1) / 2;
+      return new THREE.Vector3(x - cx, verticalForLevel(levelIndex), -(y - cy));
+    }
+
+    function fieldIndex(t, level, y, x) {
+      const [, levels, sizeY, sizeX] = field.shape;
+      return (((t * levels + level) * sizeY + y) * sizeX + x);
+    }
+
+    function sampleComponent(values, t, level, x, y) {
+      const bounds = field.bounds;
+      const size = field.shape[3];
+      const gx = THREE.MathUtils.clamp(
+        (x - bounds.x0) / (bounds.x1 - bounds.x0 - 1) * (size - 1),
+        0,
+        size - 1.001
+      );
+      const gy = THREE.MathUtils.clamp(
+        (y - bounds.y0) / (bounds.y1 - bounds.y0 - 1) * (size - 1),
+        0,
+        size - 1.001
+      );
+      const x0 = Math.floor(gx);
+      const y0 = Math.floor(gy);
+      const x1 = Math.min(size - 1, x0 + 1);
+      const y1 = Math.min(size - 1, y0 + 1);
+      const ax = gx - x0;
+      const ay = gy - y0;
+      const a = values[fieldIndex(t, level, y0, x0)];
+      const b = values[fieldIndex(t, level, y0, x1)];
+      const c = values[fieldIndex(t, level, y1, x0)];
+      const d = values[fieldIndex(t, level, y1, x1)];
+      return (a * (1 - ax) + b * ax) * (1 - ay) + (c * (1 - ax) + d * ax) * ay;
+    }
+
+    function windAt(x, y, level) {
+      if (!field || !state) return { u: 0, v: 0 };
+      const localTime = THREE.MathUtils.clamp(
+        state.sim_time_hours - field.bounds.t0,
+        0,
+        field.shape[0] - 1.001
+      );
+      const t0 = Math.floor(localTime);
+      const t1 = Math.min(field.shape[0] - 1, t0 + 1);
+      const alpha = localTime - t0;
+      const u0 = sampleComponent(field.u, t0, level, x, y);
+      const v0 = sampleComponent(field.v, t0, level, x, y);
+      const u1 = sampleComponent(field.u, t1, level, x, y);
+      const v1 = sampleComponent(field.v, t1, level, x, y);
+      return {
+        u: u0 * (1 - alpha) + u1 * alpha,
+        v: v0 * (1 - alpha) + v1 * alpha
+      };
+    }
+
+    function clearGroup(group) {
+      while (group.children.length) {
+        const child = group.children.pop();
+        child.geometry?.dispose();
+        if (Array.isArray(child.material)) child.material.forEach(item => item.dispose());
+        else child.material?.dispose();
+      }
+    }
+
+    function rebuildLevels() {
+      clearGroup(levelGroup);
+      const shown = [0, 3, 6, 9, 12, 15, 17];
+      for (const level of shown) {
+        const grid = new THREE.GridHelper(64, 8, 0x53605d, 0x2f3836);
+        grid.position.y = verticalForLevel(level);
+        grid.material.transparent = true;
+        grid.material.opacity = level === Number(levelSelect.value) ? 0.42 : 0.17;
+        levelGroup.add(grid);
+      }
+    }
+
+    function rebuildBounds() {
+      if (boundsHelper) {
+        scene.remove(boundsHelper);
+        boundsHelper.geometry.dispose();
+        boundsHelper.material.dispose();
+      }
+      const box = new THREE.Box3(
+        new THREE.Vector3(-32, -13, -32),
+        new THREE.Vector3(32, 13, 32)
+      );
+      boundsHelper = new THREE.Box3Helper(box, 0x7fb1f2);
+      boundsHelper.material.transparent = true;
+      boundsHelper.material.opacity = 0.5;
+      scene.add(boundsHelper);
+    }
+
+    function rebuildArrows() {
+      clearGroup(arrowGroup);
+      if (!field || !state) return;
+      const level = Number(levelSelect.value);
+      const count = 10;
+      for (let iy = 0; iy < count; iy += 1) {
+        for (let ix = 0; ix < count; ix += 1) {
+          const x = field.bounds.x0 + (ix + 0.5) / count * 64;
+          const y = field.bounds.y0 + (iy + 0.5) / count * 64;
+          const wind = windAt(x, y, level);
+          const speed = Math.max(0.01, Math.hypot(wind.u, wind.v));
+          const direction = new THREE.Vector3(wind.u / speed, 0, -wind.v / speed);
+          const length = THREE.MathUtils.clamp(speed * 0.22, 1.2, 5.2);
+          const arrow = new THREE.ArrowHelper(
+            direction,
+            scenePoint(x, y, level),
+            length,
+            0x68d6c2,
+            Math.min(1.2, length * 0.25),
+            Math.min(0.75, length * 0.16)
+          );
+          arrow.line.material.transparent = true;
+          arrow.line.material.opacity = 0.78;
+          arrowGroup.add(arrow);
+        }
+      }
+    }
+
+    function resetParticles() {
+      if (!field) return;
+      for (const particle of particleData) {
+        particle.x = field.bounds.x0 + Math.random() * 64;
+        particle.y = field.bounds.y0 + Math.random() * 64;
+        particle.level = Math.floor(Math.random() * 18);
+        particle.age = Math.random() * 8;
+      }
+      updateParticlePositions();
+    }
+
+    function updateParticlePositions() {
+      for (let i = 0; i < particleCount; i += 1) {
+        const particle = particleData[i];
+        const point = scenePoint(particle.x, particle.y, particle.level);
+        particlePositions[i * 3] = point.x;
+        particlePositions[i * 3 + 1] = point.y;
+        particlePositions[i * 3 + 2] = point.z;
+      }
+      particleGeometry.attributes.position.needsUpdate = true;
+    }
+
+    function advanceParticles(realSeconds) {
+      if (!field || !state) return;
+      const simulatedSeconds = realSeconds * state.playback_hours_per_second * 3600;
+      const centerLat = state.grid.lat_origin
+        + state.grid.dlat * (field.bounds.y0 + field.bounds.y1) / 2;
+      const dx = 111320 * Math.max(0.1, Math.cos(centerLat * Math.PI / 180)) * state.grid.dlon;
+      const dy = 111320 * state.grid.dlat;
+      for (const particle of particleData) {
+        const wind = windAt(particle.x, particle.y, particle.level);
+        particle.x += wind.u * simulatedSeconds / dx;
+        particle.y += wind.v * simulatedSeconds / dy;
+        particle.age += realSeconds;
+        const outside = particle.x < field.bounds.x0 || particle.x >= field.bounds.x1
+          || particle.y < field.bounds.y0 || particle.y >= field.bounds.y1;
+        if (outside || particle.age > 14) {
+          particle.x = field.bounds.x0 + Math.random() * 64;
+          particle.y = field.bounds.y0 + Math.random() * 64;
+          particle.level = Math.floor(Math.random() * 18);
+          particle.age = 0;
+        }
+      }
+      updateParticlePositions();
+    }
+
+    function updateAgentAndTrail() {
+      if (!state || !field) return;
+      agentGroup.position.copy(
+        scenePoint(state.agent.x, state.agent.y, state.agent.level_index)
+      );
+      const points = state.trail
+        .filter(item =>
+          item.x >= field.bounds.x0 && item.x <= field.bounds.x1
+          && item.y >= field.bounds.y0 && item.y <= field.bounds.y1
+        )
+        .map(item => scenePoint(item.x, item.y, state.agent.level_index));
+      if (trailLine) {
+        trailGroup.remove(trailLine);
+        trailLine.geometry.dispose();
+        trailLine.material.dispose();
+      }
+      if (points.length > 1) {
+        trailLine = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(points),
+          new THREE.LineBasicMaterial({ color: 0xffcc66, transparent: true, opacity: 0.9 })
+        );
+        trailGroup.add(trailLine);
+      } else {
+        trailLine = null;
+      }
+    }
+
+    function boundsText(bounds) {
+      if (!bounds) return "No pending generation";
+      return `t[${bounds.t0}:${bounds.t1}] y[${bounds.y0}:${bounds.y1}] x[${bounds.x0}:${bounds.x1}]`;
+    }
+
+    function updateStatus() {
+      if (!state) return;
+      let mode = "ready";
+      let text = state.running ? "Advecting on generated wind" : "Simulation paused";
+      if (state.error) {
+        mode = "error";
+        text = "Generator error";
+      } else if (state.waiting_for_field) {
+        mode = "generating";
+        text = "Waiting for generated wind";
+      } else if (state.generating_bounds) {
+        mode = "generating";
+        text = "Advecting while GPU generates ahead";
+      }
+      statusDot.className = `status-dot ${mode}`;
+      statusText.textContent = text;
+      timestampLabel.textContent = state.timestamp.replace("T", " ").slice(0, 16);
+      agentWindLabel.textContent = `${state.agent.speed_mps.toFixed(1)} m/s`;
+      positionLabel.textContent = `${state.agent.lat.toFixed(2)}°, ${state.agent.lon.toFixed(2)}°`;
+      modelLevelLabel.textContent = String(state.agent.model_level);
+      cachedLabel.textContent = String(state.cached_chunks);
+      windowsLabel.textContent = state.model_window_calls.toLocaleString();
+      generationTimeLabel.textContent = state.last_generation_seconds == null
+        ? "—"
+        : `${state.last_generation_seconds.toFixed(1)} s`;
+      generationBoundsLabel.textContent = boundsText(state.generating_bounds);
+      const phases = Object.entries(state.phase_window_calls)
+        .map(([name, count]) => `${name}: ${count}`)
+        .join(" · ");
+      phaseCallsLabel.textContent = phases || "No model evaluations yet";
+      errorPanel.hidden = !state.error;
+      errorPanel.textContent = state.error || "";
+      if (document.activeElement !== speedInput) {
+        speedInput.value = state.playback_hours_per_second;
+        speedLabel.textContent = `${state.playback_hours_per_second.toFixed(2)} h/s`;
+      }
+      playButton.setAttribute("aria-pressed", String(state.running));
+      playButton.innerHTML = state.running
+        ? '<span aria-hidden="true">Ⅱ</span><span>Pause</span>'
+        : '<span aria-hidden="true">▶</span><span>Play</span>';
+    }
+
+    async function postControl(command) {
+      const response = await fetch("/api/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(command)
+      });
+      state = await response.json();
+      updateStatus();
+    }
+
+    async function fetchField() {
+      if (fieldFetchInFlight) return;
+      fieldFetchInFlight = true;
+      try {
+        const response = await fetch("/api/field", { cache: "no-store" });
+        const payload = await response.json();
+        if (!payload.ready) return;
+        field = payload;
+        field.u = Float32Array.from(payload.u);
+        field.v = Float32Array.from(payload.v);
+        loadedChunkId = payload.chunk_id;
+        rebuildLevels();
+        rebuildBounds();
+        rebuildArrows();
+        resetParticles();
+        updateAgentAndTrail();
+      } finally {
+        fieldFetchInFlight = false;
+      }
+    }
+
+    async function pollState() {
+      try {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        state = await response.json();
+        if (!levelSelect.options.length) {
+          state.levels.forEach((level, index) => {
+            const option = document.createElement("option");
+            option.value = index;
+            option.textContent = level;
+            levelSelect.appendChild(option);
+          });
+          levelSelect.value = state.agent.level_index;
+        } else if (document.activeElement !== levelSelect) {
+          levelSelect.value = state.agent.level_index;
+        }
+        updateStatus();
+        if (state.active_chunk_id && state.active_chunk_id !== loadedChunkId) {
+          await fetchField();
+        }
+        updateAgentAndTrail();
+        rebuildArrows();
+      } catch (error) {
+        statusDot.className = "status-dot error";
+        statusText.textContent = "Server disconnected";
+        errorPanel.hidden = false;
+        errorPanel.textContent = String(error);
+      }
+    }
+
+    playButton.addEventListener("click", () => {
+      if (state) postControl({ running: !state.running });
+    });
+    resetButton.addEventListener("click", () => postControl({ reset: true }));
+    levelSelect.addEventListener("change", () => {
+      postControl({ level_index: Number(levelSelect.value) });
+      rebuildLevels();
+      rebuildArrows();
+    });
+    speedInput.addEventListener("input", () => {
+      speedLabel.textContent = `${Number(speedInput.value).toFixed(2)} h/s`;
+    });
+    speedInput.addEventListener("change", () => {
+      postControl({ playback: Number(speedInput.value) });
+    });
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    renderer.domElement.addEventListener("dblclick", event => {
+      if (!field || !state) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = (event.clientX - rect.left) / rect.width * 2 - 1;
+      pointer.y = -(event.clientY - rect.top) / rect.height * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const plane = new THREE.Plane(
+        new THREE.Vector3(0, 1, 0),
+        -verticalForLevel(state.agent.level_index)
+      );
+      const hit = new THREE.Vector3();
+      if (raycaster.ray.intersectPlane(plane, hit)) {
+        const cx = (field.bounds.x0 + field.bounds.x1) / 2;
+        const cy = (field.bounds.y0 + field.bounds.y1) / 2;
+        postControl({ x: hit.x + cx, y: -hit.z + cy });
+      }
+    });
+
+    function resize() {
+      const width = sceneElement.clientWidth;
+      const height = sceneElement.clientHeight;
+      renderer.setSize(width, height, false);
+      camera.aspect = width / Math.max(1, height);
+      camera.updateProjectionMatrix();
+    }
+    new ResizeObserver(resize).observe(sceneElement);
+    resize();
+
+    function animate(now) {
+      const dt = Math.min(0.1, (now - lastFrame) / 1000);
+      lastFrame = now;
+      advanceParticles(dt);
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    pollState();
+    setInterval(pollState, 750);
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>

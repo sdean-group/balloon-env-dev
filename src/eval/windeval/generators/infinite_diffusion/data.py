@@ -23,8 +23,24 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import xarray as xr
 from torch.utils.data import Dataset
+
+try:
+    import xarray as xr
+except ModuleNotFoundError:  # Sampling from a checkpoint does not require ERA5 I/O.
+    xr = None
+
+
+def _open_zarr(path: str | Path) -> xr.Dataset:
+    """Open a v2 store across both pre-2025 and current xarray releases."""
+    if xr is None:
+        raise ModuleNotFoundError(
+            "xarray is required to read ERA5 datasets; install xarray and zarr"
+        )
+    try:
+        return xr.open_zarr(path, consolidated=False, zarr_format=2)
+    except TypeError:  # xarray versions before the zarr v3 transition
+        return xr.open_zarr(path, consolidated=False)
 
 
 @dataclass
@@ -147,8 +163,7 @@ def compute_stats(u: np.ndarray, v: np.ndarray, levels: np.ndarray, *, eps: floa
 def _open_parts(zarr_path, levels) -> list[xr.Dataset]:
     """Open one path or a list of paths as level-selected datasets (time-concat parts)."""
     paths = [zarr_path] if isinstance(zarr_path, (str, Path)) else list(zarr_path)
-    return [_select_levels(xr.open_zarr(p, consolidated=False, zarr_format=2), levels)
-            for p in paths]
+    return [_select_levels(_open_zarr(p), levels) for p in paths]
 
 
 def _concat_var(parts: list[xr.Dataset], var: str, dtype: np.dtype,
@@ -185,6 +200,94 @@ def _concat_var(parts: list[xr.Dataset], var: str, dtype: np.dtype,
     return out
 
 
+def compute_zarr_stats(
+    zarr_path: str | Path,
+    *,
+    levels: tuple[int, int] | None = (49, 66),
+    time_chunk: int = 168,
+    eps: float = 1e-6,
+    progress_path: str | Path | None = None,
+    stop_requested=None,
+) -> NormStats | None:
+    """Compute training-only normalization statistics without loading the store into RAM.
+
+    The scan uses float64 accumulators and reads at most ``time_chunk`` timestamps at once.
+    This is intended for multi-year stores where the eager :func:`compute_stats` path is
+    impossible. Non-finite values are ignored independently for each variable and level.
+    """
+    if time_chunk <= 0:
+        raise ValueError("time_chunk must be positive")
+    ds = _open_zarr(zarr_path)
+    ds = _select_levels(ds, levels)
+    level_vals = np.asarray(ds["level"].values)
+    n_levels = len(level_vals)
+    sums = {name: np.zeros(n_levels, dtype=np.float64) for name in ("u", "v")}
+    sums_sq = {name: np.zeros(n_levels, dtype=np.float64) for name in ("u", "v")}
+    counts = {name: np.zeros(n_levels, dtype=np.int64) for name in ("u", "v")}
+
+    n_time = int(ds.sizes["time"])
+    progress = Path(progress_path) if progress_path is not None else None
+    next_start = 0
+    if progress is not None and progress.exists():
+        saved = np.load(progress)
+        if int(saved["n_time"]) != n_time or not np.array_equal(saved["levels"], level_vals):
+            raise ValueError(f"{progress}: progress metadata does not match {zarr_path}")
+        next_start = int(saved["next_start"])
+        for name in ("u", "v"):
+            sums[name] = saved[f"{name}_sum"]
+            sums_sq[name] = saved[f"{name}_sum_sq"]
+            counts[name] = saved[f"{name}_count"]
+
+    def save_progress(stop: int) -> None:
+        if progress is None:
+            return
+        temporary = progress.with_suffix(progress.suffix + ".tmp")
+        with temporary.open("wb") as stream:
+            np.savez(
+                stream,
+                n_time=n_time,
+                levels=level_vals,
+                next_start=stop,
+                u_sum=sums["u"],
+                u_sum_sq=sums_sq["u"],
+                u_count=counts["u"],
+                v_sum=sums["v"],
+                v_sum_sq=sums_sq["v"],
+                v_count=counts["v"],
+            )
+        temporary.replace(progress)
+
+    for start in range(next_start, n_time, time_chunk):
+        stop = min(n_time, start + time_chunk)
+        for name in ("u", "v"):
+            values = np.asarray(ds[name].isel(time=slice(start, stop)).values, dtype=np.float64)
+            finite = np.isfinite(values)
+            axes = (0, 2, 3)
+            sums[name] += np.where(finite, values, 0.0).sum(axis=axes)
+            sums_sq[name] += np.where(finite, values * values, 0.0).sum(axis=axes)
+            counts[name] += finite.sum(axis=axes)
+        save_progress(stop)
+        if stop_requested is not None and stop_requested() and stop < n_time:
+            ds.close()
+            return None
+    ds.close()
+
+    if np.any(counts["u"] == 0) or np.any(counts["v"] == 0):
+        raise ValueError(f"no finite samples for at least one level in {zarr_path}")
+
+    def moments(name: str) -> tuple[np.ndarray, np.ndarray]:
+        mean = sums[name] / counts[name]
+        variance = np.maximum(sums_sq[name] / counts[name] - mean * mean, 0.0)
+        return mean, np.sqrt(variance) + eps
+
+    mean_u, std_u = moments("u")
+    mean_v, std_v = moments("v")
+    result = NormStats(mean_u, std_u, mean_v, std_v, level_vals)
+    if progress is not None and progress.exists():
+        progress.unlink()
+    return result
+
+
 class WindCropDataset(Dataset):
     """Random fixed-size (u,v) crops from an ERA5 zarr, normalised + reflection-augmented.
 
@@ -209,7 +312,7 @@ class WindCropDataset(Dataset):
         augment: bool = True,
         seed: int = 0,
     ) -> None:
-        ds = xr.open_zarr(zarr_path, consolidated=False, zarr_format=2)
+        ds = _open_zarr(zarr_path)
         ds = _select_levels(ds, levels)
         self.u = np.ascontiguousarray(ds["u"].values, dtype=np.float32)  # (T,L,Y,X)
         self.v = np.ascontiguousarray(ds["v"].values, dtype=np.float32)
@@ -388,7 +491,7 @@ class WindPairDataset(Dataset):
         augment: bool = True,
         seed: int = 0,
     ) -> None:
-        ds = xr.open_zarr(zarr_path, consolidated=False, zarr_format=2)
+        ds = _open_zarr(zarr_path)
         ds = _select_levels(ds, levels)
         self.u = np.ascontiguousarray(ds["u"].values, dtype=np.float32)  # (T,L,Y,X)
         self.v = np.ascontiguousarray(ds["v"].values, dtype=np.float32)
@@ -458,21 +561,27 @@ class WindSpaceTimeDataset(Dataset):
         augment: bool = True,
         seed: int = 0,
         storage_dtype: str = "float32",
+        lazy: bool = False,
     ) -> None:
         # zarr_path may be a LIST of per-year zarrs (time-concatenated in the given order;
         # grids must match). storage_dtype="float16" halves in-RAM size for multi-year
         # sets (quantization ~0.01 m/s vs ~8 m/s data std); items are cast back to
         # float32 before normalization, so the model always sees float32.
-        parts = _open_parts(zarr_path, levels)
+        # lazy=True keeps NOTHING resident and reads each block from the store(s) on
+        # demand — for multi-year stores that do not fit in RAM. It requires precomputed
+        # NormStats (see compute_zarr_stats), since a full pass is exactly what we avoid.
+        paths = [zarr_path] if isinstance(zarr_path, (str, Path)) else list(zarr_path)
+        self.zarr_paths = [str(p) for p in paths]
+        self.levels = levels
+        self.lazy = bool(lazy)
+        self._lazy_parts = None
+        parts = _open_parts(paths, levels)
         p0 = parts[0]
         for p in parts[1:]:
             if not (np.array_equal(p["level"].values, p0["level"].values)
                     and np.allclose(p["lat"].values, p0["lat"].values)
                     and np.allclose(p["lon"].values, p0["lon"].values)):
                 raise ValueError("multi-zarr training set: level/lat/lon grids differ")
-        dtype = np.dtype(storage_dtype)
-        self.u = _concat_var(parts, "u", dtype)                          # (T,L,Y,X)
-        self.v = _concat_var(parts, "v", dtype)
         self.level_vals = np.asarray(p0["level"].values)
         self.lat_vals = np.asarray(p0["lat"].values, dtype=np.float64)
         self.lon_vals = np.asarray(p0["lon"].values, dtype=np.float64)
@@ -481,7 +590,16 @@ class WindSpaceTimeDataset(Dataset):
             raise ValueError("multi-zarr training set: time must be strictly increasing "
                              "(pass paths in ascending year order)")
         self.times = times
-        self.T, self.L, self.Y, self.X = self.u.shape
+        # global time index -> (part, local index) for the lazy reader
+        self._part_offsets = np.cumsum([0] + [int(p.sizes["time"]) for p in parts])
+        self.T = int(len(times))
+        self.L, self.Y, self.X = (int(p0.sizes[d]) for d in ("level", "y", "x"))
+        if self.lazy:
+            self.u = self.v = None
+        else:
+            dtype = np.dtype(storage_dtype)
+            self.u = _concat_var(parts, "u", dtype)                      # (T,L,Y,X)
+            self.v = _concat_var(parts, "v", dtype)
         if crop > min(self.Y, self.X):
             raise ValueError(f"crop {crop} > grid {(self.Y, self.X)}")
         self.crop = int(crop)
@@ -491,7 +609,14 @@ class WindSpaceTimeDataset(Dataset):
         self.augment = bool(augment)
         self.seed = int(seed)
         self.n_channels = 2 * self.L
+        if self.lazy and stats is None:
+            raise ValueError("lazy spacetime loading requires precomputed NormStats")
         self.stats = stats or compute_stats(self.u, self.v, self.level_vals)
+        if not np.array_equal(np.asarray(self.stats.levels), self.level_vals):
+            raise ValueError(
+                f"normalization levels {self.stats.levels} do not match data levels "
+                f"{self.level_vals}"
+            )
 
         # a block needs (n_frames-1)*frame_stride frames after t, all in one contiguous block
         span = (self.n_frames - 1) * self.frame_stride
@@ -502,9 +627,37 @@ class WindSpaceTimeDataset(Dataset):
             raise ValueError(f"no valid {self.n_frames}-frame blocks at frame_stride="
                              f"{self.frame_stride} (blocks={blocks})")
         self.blocks = blocks
+        for p in parts:
+            p.close()
 
     def __len__(self) -> int:
         return self.length
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["_lazy_parts"] = None      # never pickle open stores into workers
+        return state
+
+    def _read_block(self, ts: list[int], y0: int, x0: int) -> tuple[np.ndarray, np.ndarray]:
+        """(u, v) for frames ``ts`` in the window: from RAM, or lazily from the store(s)."""
+        c = self.crop
+        if not self.lazy:
+            return (self.u[ts][:, :, y0:y0 + c, x0:x0 + c],
+                    self.v[ts][:, :, y0:y0 + c, x0:x0 + c])
+        if self._lazy_parts is None:               # opened per worker process (see __getstate__)
+            self._lazy_parts = _open_parts(self.zarr_paths, self.levels)
+        ts = np.asarray(ts, dtype=np.int64)
+        part = np.searchsorted(self._part_offsets, ts, side="right") - 1
+        u = np.empty((len(ts), self.L, c, c), dtype=np.float32)
+        v = np.empty_like(u)
+        for k in np.unique(part):                  # a block may straddle a year boundary
+            sel = np.where(part == k)[0]
+            local = (ts[sel] - self._part_offsets[k]).tolist()
+            ds = self._lazy_parts[k]
+            idx = {"time": local, "y": slice(y0, y0 + c), "x": slice(x0, x0 + c)}
+            u[sel] = np.asarray(ds["u"].isel(**idx).values, dtype=np.float32)
+            v[sel] = np.asarray(ds["v"].isel(**idx).values, dtype=np.float32)
+        return u, v
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         rng = np.random.default_rng(self.seed * 1_000_003 + idx)
@@ -513,8 +666,7 @@ class WindSpaceTimeDataset(Dataset):
         x0 = int(rng.integers(self.X - self.crop + 1))
         c = self.crop
         ts = [t0 + k * self.frame_stride for k in range(self.n_frames)]
-        u = self.u[ts][:, :, y0:y0 + c, x0:x0 + c]      # (τ,L,c,c)
-        v = self.v[ts][:, :, y0:y0 + c, x0:x0 + c]
+        u, v = self._read_block(ts, y0, x0)               # (τ,L,c,c)
         f = (np.stack([u, v], axis=2).reshape(self.n_frames, self.n_channels, c, c)
              .astype(np.float32, copy=False))           # no-op unless storage is float16
         x = self.stats.normalize(torch.from_numpy(f))   # (τ,C,c,c), normalize handles 4D
@@ -594,8 +746,7 @@ class WindCondSpaceTimeDataset(WindSpaceTimeDataset):
         x0 = int(rng.integers(self.X - self.crop + 1))
         c = self.crop
         ts = [t0 + k * self.frame_stride for k in range(self.n_frames)]
-        u = self.u[ts][:, :, y0:y0 + c, x0:x0 + c]      # (τ,L,c,c)
-        v = self.v[ts][:, :, y0:y0 + c, x0:x0 + c]
+        u, v = self._read_block(ts, y0, x0)               # (τ,L,c,c)
         f = (np.stack([u, v], axis=2).reshape(self.n_frames, self.n_channels, c, c)
              .astype(np.float32, copy=False))           # no-op unless storage is float16
         x = self.stats.normalize(torch.from_numpy(f))   # (τ,C,c,c)

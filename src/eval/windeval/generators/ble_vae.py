@@ -1,8 +1,9 @@
 """BLE-VAE generator (offlineskies22) -> WindArtifact, to score against the harness.
 
 A faithful pure-numpy reimplementation of the BLE decoder forward pass. We avoid the
-real flax Decoder because its mutable-dataclass defaults break on Python 3.14; flax is
-used only to restore the msgpack params. The decoder is simple and fully understood:
+real flax Decoder because its mutable-dataclass defaults break on Python 3.14. The small
+MessagePack reader below implements the array extension used by Flax checkpoints, so
+neither Flax nor JAX is required. The decoder is simple and fully understood:
 
     latents(64) -> 3x[Dense(1000)+relu] -> Dense(4410) -> reshape(7,7,90)
                 -> bilinear resize to (23,23,90) -> u=dΨ/dy, v=-dΨ/dx (curl of Ψ)
@@ -20,8 +21,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import msgpack
 import numpy as np
-import flax
 
 from .. import artifact
 
@@ -40,8 +41,26 @@ DISP_KM = 500.0
 P_MIN_HPA, P_MAX_HPA = 50.0, 140.0
 
 
+def _msgpack_extension(code: int, data: bytes):
+    if code in (1, 3):  # Flax ndarray and NumPy scalar extension codes.
+        shape, dtype_name, buffer = msgpack.unpackb(data, raw=True)
+        if dtype_name == b"bfloat16":
+            raise ValueError("bfloat16 BLE weights are not supported by the NumPy decoder")
+        array = np.frombuffer(buffer, dtype=np.dtype(dtype_name)).reshape(shape)
+        return array[()] if code == 3 else array
+    if code == 2:  # Native complex.
+        real, imaginary = msgpack.unpackb(data, raw=False)
+        return complex(real, imaginary)
+    return msgpack.ExtType(code, data)
+
+
 def load_params(path=WEIGHTS) -> dict:
-    return flax.serialization.msgpack_restore(Path(path).read_bytes())["params"]
+    state = msgpack.unpackb(
+        Path(path).read_bytes(),
+        ext_hook=_msgpack_extension,
+        raw=False,
+    )
+    return state["params"]
 
 
 def _resize_axis(a, n_out, axis):
