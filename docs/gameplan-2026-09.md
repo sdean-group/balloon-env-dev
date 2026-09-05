@@ -72,6 +72,16 @@ training run and keep them fixed across rungs.
 - Primary outcome: transfer gap = performance(sim\*) − performance(train sim) and absolute
   performance on sim\*, per rung, per task, with confidence intervals over seeds and days.
 
+## Status log
+
+- **2026-09-05, step 1 done.** Unicorn env built and verified; pretrained cBottle-3d runs
+  (2 global HPX64 samples in 17 s on the group RTX 3090). Step 1a at the one shared level
+  (50 hPa, 16 timestamps): spectra decent (mean abs log ratio 0.10-0.19), but a systematic
+  ~5-10 m/s easterly bias, a much-too-weak polar-night jet, and the QBO phase missing in the
+  tropics. Details in the hub LOG. **New design item for Stage 1: a slow-state conditioner
+  (QBO / previous-month zonal wind), since cyclic time harmonics cannot carry interannual
+  stratospheric modes.**
+
 ## Steps in order
 
 1. **Run cBottle** (pretrained) on Kahan: install `earth2grid` + cBottle, run the coarse
