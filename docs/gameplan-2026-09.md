@@ -1,8 +1,12 @@
 # Gameplan, September 2026 — fidelity-to-transfer study on adapted cBottle
 
 Written 2026-09-04 from Shaurya's plan after the Sarah/Rohan meeting, with two corrections
-(marked **⚠**). Owners: Shaurya (generator, benchmark, transfer study), Rohan (balloon
-environment, task, globe viz). Hub `LOG.md` has the decision record.
+(marked **⚠**). Hub `LOG.md` has the decision record.
+
+**Ownership (updated 2026-09-05):** Shaurya + this session own everything, generator, benchmark,
+transfer study, *and* the balloon evaluation environment and simulation, built incrementally.
+Rohan has other commitments; his space-time wrapper and CFGD code stay in the repo as reference
+but are not a dependency of the plan.
 
 ## The paper
 
