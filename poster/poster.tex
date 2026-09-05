@@ -3,7 +3,7 @@
 \usepackage[T1]{fontenc}
 \usepackage[default]{lato}
 \usepackage{amsmath,amssymb,graphicx,tikz,array,booktabs,colortbl}
-\usetikzlibrary{arrows.meta,calc,positioning}
+\usetikzlibrary{positioning}
 \pagestyle{empty}
 \setlength{\parindent}{0pt}
 
@@ -16,12 +16,10 @@
 \definecolor{pale}{HTML}{F3F6F9}
 \definecolor{paleteal}{HTML}{E5F4F1}
 \definecolor{paleorange}{HTML}{FFF3E2}
-\definecolor{redaccent}{HTML}{D74A4A}
+\definecolor{palenavy}{HTML}{EAF0F8}
+\definecolor{infobg}{HTML}{FFFFFF}
 
-\newcommand{\bodyfont}{\fontsize{24}{30}\selectfont}
-\newcommand{\smallfont}{\fontsize{21}{26}\selectfont}
-\newcommand{\capfont}{\fontsize{19}{23}\selectfont}
-\newcommand{\tinyfont}{\fontsize{17}{20}\selectfont}
+\newcommand{\bodyfont}{\fontsize{25}{31}\selectfont}
 \newcommand{\pbullet}{\textcolor{teal}{\textbullet}\enspace}
 \newcommand{\card}[4]{%
   \draw[fill=white,draw=line,line width=1.0pt,rounded corners=0.10in]
@@ -30,22 +28,8 @@
 \newcommand{\sectitle}[4]{%
   \node[anchor=west,fill=navy,text=white,rounded corners=0.07in,
     inner xsep=0.17in,inner ysep=0.08in,
-    font=\fontsize{29}{34}\selectfont\bfseries]
-    at (#1,#2) {\makebox[0.45in][l]{#3}#4};%
-}
-\newcommand{\subhead}[3]{%
-  \node[anchor=north west,text width=#3,align=left,text=navy,
-    font=\fontsize{26}{31}\selectfont\bfseries] at (#1) {#2};%
-}
-\newcommand{\artslot}[7]{%
-  \draw[fill=pale,draw=teal,line width=1.4pt,dashed,rounded corners=.08in]
-    (#1,#2) rectangle (#3,#4);
-  \node[anchor=north west,fill=teal,text=white,rounded corners=.04in,
-    inner xsep=.12in,inner ysep=.05in,font=\fontsize{18}{21}\selectfont\bfseries]
-    at ($(#1,#4)+(.14,-.14)$) {#5};
-  \node[align=center,text width=#7,text=navy,font=\smallfont]
-    at ($0.5*(#1,#2)+0.5*(#3,#4)$) {\textbf{#6}\\[2mm]
-    \textcolor{muted}{Final artwork brief: \texttt{DIAGRAM\_PROMPTS.md}}};
+    font=\fontsize{31}{35}\selectfont\bfseries]
+    at (#1,#2) {\makebox[0.46in][l]{#3}#4};%
 }
 
 \begin{document}
@@ -53,236 +37,294 @@
 \begin{tikzpicture}[x=1in,y=1in]
 \path[use as bounding box] (0,0) rectangle (30,40);
 
-% Header
+% Normal compilation previews the complete poster. The final build compiles
+% only this overlay and merges it onto the supplied authoritative PDF.
+\ifdefined\overlayonly\else
+  \node[anchor=south west,inner sep=0pt] at (0,0)
+    {\includegraphics[width=30in,height=40in]{poster_source.pdf}};
+\fi
+
+% Simplified header with larger title and Cornell identity.
 \fill[navy] (0.38,36.20) rectangle (29.62,39.62);
-\node[anchor=north west,text=white,font=\fontsize{54}{59}\selectfont\bfseries]
-  at (0.82,39.18) {Unbounded Wind Fields for Stratospheric Balloon Simulation};
-\node[anchor=north west,text=white!84,font=\fontsize{28}{33}\selectfont]
-  at (0.84,38.24) {Generating realistic weather beyond a single model window};
-\node[anchor=north west,text=white,font=\fontsize{28}{33}\selectfont\bfseries]
-  at (0.84,37.58) {Shaurya Sen \quad\textcolor{white!55}{\textbullet}\quad Rohan Shankar};
-\node[anchor=north west,text=white!82,font=\fontsize{21}{26}\selectfont]
-  at (0.84,37.02) {Dean Group, Cornell University \quad|\quad Faculty: Prof. Sarah Dean
-  \quad|\quad Advisors: Vinamr Jain and Yujin Kim};
-\node[anchor=north east,text=white!76,font=\fontsize{19}{23}\selectfont]
-  at (29.15,36.55) {github.com/sdean-group/balloon-env-dev};
+\node[anchor=north west,text=white,font=\fontsize{68}{73}\selectfont\bfseries]
+  at (0.82,39.26) {Unbounded Wind Fields for Stratospheric Balloon Simulation};
+\node[anchor=north west,text=white,font=\fontsize{34}{40}\selectfont\bfseries]
+  at (0.84,37.52) {Shaurya Sen\hspace{0.18in}\textcolor{white!55}{\textbullet}
+  \hspace{0.18in}Rohan Shankar};
+\node[anchor=north west,text=white!82,font=\fontsize{26}{31}\selectfont]
+  at (0.84,36.82) {Faculty: Prof. Sarah Dean \quad|\quad
+  Advisors: Vinamr Jain and Yujin Kim};
+\node[anchor=center,inner sep=0pt] at (28.25,37.91)
+  {\includegraphics[width=2.30in]{figures/cornell_seal_white.png}};
 
-% ===========================================================================
-% COLUMN 1: motivation + base model
-% ===========================================================================
-\card{0.40}{1.25}{9.95}{35.70}
-\sectitle{0.60}{35.70}{1}{Why wind needs a generative world}
+% Standard five-section hierarchy. Existing long labels are first covered so
+% shorter replacements do not leave fragments behind.
+\fill[white] (0.45,35.34) rectangle (7.15,36.06);
+\draw[line,line width=1pt] (0.45,35.70)--(9.90,35.70);
+\sectitle{0.60}{35.70}{1}{Introduction}
 
-\node[anchor=north,text width=8.55in,align=center,fill=paleteal,
-  inner sep=.17in,text=ink,font=\fontsize{29}{35}\selectfont\bfseries]
-  at (5.175,34.88) {A global balloon needs weather beyond a single training crop.};
-\node[anchor=north west,text width=8.55in,align=left,text=ink,font=\smallfont]
-  at (0.86,33.10) {Altitude control exploits coherent differences between 18 wind levels.
-  ERA5 is realistic but finite; BLE-VAE learns one regional patch. We need reproducible
-  new weather anywhere a simulator asks.};
+\fill[white] (0.45,17.36) rectangle (5.60,18.08);
+\draw[line,line width=1pt] (0.60,17.75)--(9.74,17.75);
+\sectitle{0.60}{17.75}{2}{Base Diffusion Model}
 
-% D01: replace with globe/bounded-patch visual.
-\artslot{0.86}{27.10}{9.48}{31.25}{D01}{One seed, a world without patch boundaries}{7.75in}
+\fill[white] (10.25,35.34) rectangle (18.95,36.06);
+\draw[line,line width=1pt] (10.25,35.70)--(19.70,35.70);
+\sectitle{10.40}{35.70}{3}{Infinite Diffusion}
 
+\fill[white] (10.25,13.30) rectangle (19.58,14.10);
+\draw[line,line width=1.5pt] (10.48,13.70)--(19.47,13.70);
+
+\fill[white] (19.98,35.34) rectangle (28.60,36.06);
+\draw[line,line width=1pt] (20.05,35.70)--(29.55,35.70);
+\sectitle{20.20}{35.70}{4}{Evaluation and Results}
+
+\fill[white] (20.05,30.08) rectangle (23.55,30.78);
+\node[anchor=west,fill=navy,text=white,rounded corners=0.07in,
+  inner xsep=0.17in,inner ysep=0.08in,
+  font=\fontsize{29}{33}\selectfont\bfseries]
+  at (20.20,30.45) {Results};
+
+% Replace the underlying InfiniteDiffusion diagram and pseudocode with the
+% approved single infographic. Everything else remains from the handoff.
+\fill[white] (10.28,14.18) rectangle (19.67,33.52);
+\node[anchor=north,inner sep=0pt] at (14.975,33.35)
+  {\includegraphics[height=18.25in,trim=124 43 124 20,clip]
+    {figures/infinite_diffusion_infographic_mentor.pdf}};
+% Draw the caption after the opaque infographic PDF so its white page
+% background can never cover the final line of text.
+\fill[white] (10.38,33.00) rectangle (19.58,35.22);
+\node[anchor=north,text width=8.55in,align=center,text=ink,
+  font=\fontsize{28}{34}\selectfont]
+  at (14.975,35.08) {\hyphenpenalty=10000\exhyphenpenalty=10000
+  InfiniteDiffusion finds the windows\\
+  a query needs, then denoises and blends them\\
+  into one seamless field.};
+
+% Move the complete previous-work globe visual upward while preserving the
+% original PDF artwork. The crop excludes the motivation statement above it.
+\fill[white] (0.58,21.78) rectangle (9.78,33.15);
+\begin{scope}
+  \clip (0.58,22.60) rectangle (9.78,33.15);
+  \node[anchor=south west,inner sep=0pt] at (0,1.00)
+    {\includegraphics[width=30in,height=40in]{poster_source.pdf}};
+\end{scope}
+
+% Updated contribution statement, moved upward with larger text.
+\fill[white] (0.72,17.90) rectangle (9.82,22.82);
 \node[anchor=north west,text width=8.55in,align=left,fill=paleorange,
-  rounded corners=.05in,inner sep=.16in,text=ink,font=\smallfont]
-  at (0.86,26.55) {\textcolor{navy}{\textbf{What this work contributes}}\\[1mm]
-  \pbullet A conditional 4D diffusion model for hourly winds on 18 height levels.\\
-  \pbullet InfiniteDiffusion adapted to coordinate-indexed wind queries.\\
-  \pbullet Seed-consistent, spatially unbounded generation without building a globe first.\\
-  \pbullet An evaluation organized around distributions, spatial physics, vertical
-  structure, and time.};
+  rounded corners=.05in,inner sep=.18in,text=ink,font=\fontsize{29}{35}\selectfont]
+  at (0.86,22.82) {\hyphenpenalty=10000\exhyphenpenalty=10000
+  \textcolor{navy}{\textbf{Our contributions}}\\[1mm]
+  \pbullet InfiniteDiffusion for coherent, unbounded wind generation that outperforms prior balloon generators.\\
+  \pbullet A diffusion wind model conditioned on location and time.\\
+  \pbullet A realism evaluation spanning distributions, spatial physics, vertical structure, and time.};
 
-\sectitle{0.60}{21.82}{2}{The 4D base diffusion model}
-\node[anchor=north west,text width=8.55in,align=left,text=ink,font=\smallfont]
-  at (0.86,20.92) {\textbf{Learned distribution:}
-  $p(x\mid\text{latitude, longitude, date, hour})$, where
-  $x\in\mathbb{R}^{4\times36\times64\times64}$.};
+% Draw Section 2 last so the contribution cleanup layer can never cover it.
+\fill[white] (0.45,17.36) rectangle (5.60,18.08);
+\draw[line,line width=1pt] (0.60,17.75)--(9.74,17.75);
+\node[anchor=west,minimum width=5.02in,align=left,fill=navy,text=white,
+  rounded corners=0.07in,inner xsep=0.17in,inner ysep=0.08in,
+  font=\fontsize{31}{35}\selectfont\bfseries]
+  at (0.60,17.75) {\makebox[0.46in][l]{2}Base Diffusion Model};
 
-% D02: base-model I/O, conditioning and 18-level x 4-frame sample.
-\artslot{0.86}{15.98}{9.48}{19.95}{D02}{What enters the model, and what one sample contains}{7.65in}
+% Reorder the three Base Diffusion Model visuals while preserving the
+% teammate's original vector artwork: denoising process, model flow, examples.
+\fill[white] (0.62,1.34) rectangle (9.72,17.34);
+\begin{scope}
+  \clip (0.62,11.75) rectangle (9.72,17.15);
+  \node[anchor=south west,inner sep=0pt] at (0,10.00)
+    {\includegraphics[width=30in,height=40in]{poster_source.pdf}};
+\end{scope}
+\begin{scope}
+  \clip (0.62,5.55) rectangle (9.72,11.65);
+  \node[anchor=south west,inner sep=0pt] at (0,-5.45)
+    {\includegraphics[width=30in,height=40in]{poster_source.pdf}};
+\end{scope}
+\node[anchor=north,text=navy,font=\fontsize{22}{26}\selectfont\bfseries]
+  at (2.12,5.20) {ERA5};
+\node[anchor=north,text=navy,font=\fontsize{22}{26}\selectfont\bfseries]
+  at (5.17,5.20) {BLE-VAE};
+\node[anchor=north,text=navy,font=\fontsize{22}{26}\selectfont\bfseries]
+  at (8.22,5.20) {Conditional diffusion};
+\node[anchor=north,inner sep=0pt] at (2.12,4.55)
+  {\includegraphics[width=3.00in,height=2.25in]{figures/intro_pair_era5.png}};
+\node[anchor=north,inner sep=0pt] at (5.17,4.55)
+  {\includegraphics[width=3.00in,height=2.25in]{figures/intro_pair_blevae.png}};
+\node[anchor=north,inner sep=0pt] at (8.22,4.55)
+  {\includegraphics[width=3.00in,height=2.25in]{figures/intro_pair_diffusion.png}};
 
-\node[anchor=north west,text width=4.10in,align=left,fill=pale,
-  rounded corners=.05in,inner sep=.14in,text=ink,font=\tinyfont]
-  at (0.86,15.48) {\textcolor{navy}{\textbf{Architecture}}\\[1mm]
-  Factorized space-time U-Net: 2D residual blocks process each frame; zero-initialized
-  1D temporal convolutions couple the four hours. EDM trains the network to remove a
-  sampled noise level with one joint denoising loss.};
-\node[anchor=north west,text width=4.10in,align=left,fill=pale,
-  rounded corners=.05in,inner sep=.14in,text=ink,font=\tinyfont]
-  at (5.38,15.48) {\textcolor{navy}{\textbf{Training data and conditioning}}\\[1mm]
-  ERA5 model levels 49--66 over the NE Pacific; 2020--2023 training weather. Clean
-  per-pixel latitude/longitude channels locate every tile. Annual, semiannual, and
-  diurnal harmonics condition every frame.};
+% Simplified InfiniteDiffusion-in-action section.
+\fill[white] (10.32,1.42) rectangle (19.63,13.42);
 
-\subhead{0.86,11.90}{Does the bounded model resemble ERA5?}{8.55in}
-% D03: replace temporary qualitative candidate with a clean latest-checkpoint comparison.
-\artslot{0.86}{7.15}{9.48}{11.18}{D03}{ERA5 vs. base diffusion: same place, level, and four hours}{7.65in}
-\node[anchor=north,text width=8.45in,align=center,text=muted,font=\capfont]
-  at (5.175,6.82) {Use one representative held-out condition, common color scale, and
-  visible speed maxima. Show all four hours; heights are modeled as \textbf{separate
-  channels}, not convolved as a spatial axis.};
+\node[anchor=north,text=navy,font=\fontsize{29}{34}\selectfont\bfseries]
+  at (12.70,13.22) {Independent tiling};
+\node[anchor=north,text=navy,font=\fontsize{29}{34}\selectfont\bfseries]
+  at (17.25,13.22) {InfiniteDiffusion};
+\node[anchor=north,inner sep=0pt] at (14.975,12.58)
+  {\includegraphics[width=8.85in]{figures/coherence_comparison_v2.png}};
 
-\node[anchor=north,text width=8.55in,align=left,fill=paleorange,
-  rounded corners=.05in,inner sep=.15in,text=ink,font=\smallfont]
-  at (5.175,4.93) {\textcolor{navy}{\textbf{Next for the base model}}\enspace
-  Condition on a vertically resolved coarse synoptic field so large-scale regimes are
-  supplied while diffusion learns the unresolved detail and extremes.};
+\node[anchor=north,text=muted,font=\fontsize{18}{22}\selectfont]
+  at (14.975,7.90) {Wind speed magnitude (m/s)};
+\node[anchor=north,text=navy,text width=2.95in,align=center,
+  font=\fontsize{22}{27}\selectfont\bfseries]
+  at (11.95,7.36) {$O(1)$ random access};
+\node[anchor=north,text=navy,text width=2.95in,align=center,
+  font=\fontsize{22}{27}\selectfont\bfseries]
+  at (14.975,7.36) {deterministic};
+\node[anchor=north,text=navy,text width=2.95in,align=center,
+  font=\fontsize{22}{27}\selectfont\bfseries]
+  at (18.00,7.36) {unbounded};
 
-% ===========================================================================
-% COLUMN 2: InfiniteDiffusion only
-% ===========================================================================
-\card{10.20}{1.25}{19.75}{35.70}
-\sectitle{10.40}{35.70}{3}{InfiniteDiffusion for wind}
-\node[anchor=north,text width=8.55in,align=center,text=ink,font=\bodyfont]
-  at (14.975,34.86) {A bounded denoiser becomes a lazy global field by sharing noise,
-  overlap, and cached intermediate states across local queries.};
+\node[anchor=north,text=navy,font=\fontsize{26}{31}\selectfont\bfseries]
+  at (14.975,6.28) {Deterministic random access in practice};
+\node[anchor=north,inner sep=0pt] at (14.975,5.70)
+  {\includegraphics[width=8.60in,trim=0 112 0 0,clip]
+    {figures/zoom_montage_km_connectors.png}};
 
-\node[anchor=north,text width=8.55in,align=center,fill=paleteal,
-  rounded corners=.05in,inner sep=.14in,text=navy,font=\smallfont]
-  at (14.975,33.56) {\textbf{Unbounded coordinates}\quad\textcolor{teal}{|}\quad
-  \textbf{random access}\quad\textcolor{teal}{|}\quad
-  \textbf{same seed + same coordinate = same wind}};
+% --------------------------------------------------------------------------
+% Section 5 table: enlarged labels and type bands, with capitalized headings.
+% --------------------------------------------------------------------------
+\fill[white] (20.10,22.70) rectangle (29.50,29.38);
+\begin{scope}[yshift=2.90in]
+\fill[pale] (20.16,25.70) rectangle (29.44,26.36);
+\fill[navy] (20.16,25.70) rectangle (20.82,26.36);
+\fill[paleteal] (27.66,19.98) rectangle (29.44,26.36);
+\fill[paleteal] (20.16,24.14) rectangle (20.82,25.70);
+\fill[palenavy] (20.16,22.06) rectangle (20.82,24.14);
+\fill[paleorange] (20.16,21.02) rectangle (20.82,22.06);
+\fill[pale] (20.16,19.98) rectangle (20.82,21.02);
 
-\node[anchor=north west,text width=8.55in,align=left,fill=paleorange,
-  rounded corners=.05in,inner sep=.16in,text=ink,font=\smallfont]
-  at (10.70,32.20) {\textcolor{navy}{\textbf{One query, without the dense equation}}\\[1mm]
-  \textbf{Given:} requested region $R$, diffusion levels $k=K,\ldots,0$, bounded
-  denoiser $D_k$, deterministic seed $s$, and conditioning $c$ (coordinates + time).\\[1mm]
-  \textbf{1. Cover} $R$ with overlapping $64\!\times\!64$ windows $Q_i$ and include the
-  larger parent windows needed at level $k+1$.\\
-  \textbf{2. Reuse} every cached parent state $x_{k+1}[Q_i]$; create only missing
-  coordinate-indexed noise from $s$.\\
-  \textbf{3. Denoise} each window: $y_i=D_k(x_{k+1}[Q_i],c_i)$.\\
-  \textbf{4. Blend} overlap with edge taper $w_i$, normalize by total weight, and cache
-  the result $x_k[R]$.\\[1mm]
-  \textcolor{muted}{$R$: query; $Q_i$: local window; $k$: noise level; $c_i$: local
-  condition; $w_i$: edge taper; cache: previously computed state at fixed coordinates.}};
+\draw[line,line width=1.0pt] (20.16,19.98) rectangle (29.44,26.36);
+\foreach \x in {20.82,23.66,24.96,26.30,27.66}
+  \draw[line,line width=.65pt] (\x,19.98) -- (\x,26.36);
+\foreach \y in {25.70,25.18,24.66,24.14,23.62,23.10,22.58,22.06,
+  21.54,21.02,20.50,19.98}
+  \draw[line,line width=.55pt] (20.82,\y) -- (29.44,\y);
+\foreach \y in {24.14,22.06,21.02}
+  \draw[line,line width=1.2pt] (20.16,\y) -- (29.44,\y);
 
-% D04: custom dependency pyramid including cache reuse.
-\artslot{10.70}{20.55}{19.25}{26.45}{D04}{Dependency pyramid: generate only what the query needs}{7.55in}
-\node[anchor=north,text width=8.35in,align=center,text=muted,font=\capfont]
-  at (14.975,20.20) {Read top-to-bottom from high noise ($k=K$) to clean wind ($k=0$).
-  A second query should visibly reuse the overlapping branch already in cache.};
+\node[text=white,font=\fontsize{15}{17}\selectfont\bfseries] at (20.49,26.03) {TYPE};
+\node[anchor=west,text=ink,font=\fontsize{23}{26}\selectfont\bfseries] at (20.96,26.03) {Metric};
+\node[text=ink,font=\fontsize{23}{26}\selectfont\bfseries] at (24.31,26.03) {Floor};
+\node[text=ink,font=\fontsize{22}{25}\selectfont\bfseries] at (25.63,26.03) {Simplex};
+\node[text=ink,font=\fontsize{22}{25}\selectfont\bfseries] at (26.98,26.03) {BLE-VAE};
+\node[text=ink,font=\fontsize{23}{26}\selectfont\bfseries] at (28.55,26.03) {Ours};
 
-\subhead{10.70,18.92}{What unbounded generation should demonstrate}{8.55in}
-% D05: corrected 64px zoom montage with connector lines.
-\artslot{10.70}{13.28}{19.25}{18.18}{D05}{A 64x64 denoiser answers nested queries in one virtual world}{7.55in}
-\node[anchor=north,text width=8.40in,align=center,text=muted,font=\capfont]
-  at (14.975,12.96) {Red boxes and diagonal corner connectors make each zoom explicit.
-  Every view is regenerated from coordinates and the same seed, not cropped from a
-  precomputed global canvas.};
+\node[rotate=90,text=teal,inner sep=0pt,font=\fontsize{15}{17}\selectfont\bfseries]
+  at (20.49,24.92) {DISTRIBUTIONS};
+\node[rotate=90,text=navy,inner sep=0pt,font=\fontsize{15}{17}\selectfont\bfseries]
+  at (20.49,23.10) {SPATIAL PHYSICS};
+\node[rotate=90,text=orange,inner sep=0pt,font=\fontsize{13}{15}\selectfont\bfseries]
+  at (20.49,21.54) {VERTICAL};
+\node[rotate=90,text=muted,inner sep=0pt,font=\fontsize{10.5}{12}\selectfont\bfseries]
+  at (20.49,20.50) {TEMPORAL};
 
-% D06: base/naive/InfiniteDiffusion tiling comparison.
-\artslot{10.70}{7.62}{19.25}{11.75}{D06}{Single tile vs. naive averaging vs. InfiniteDiffusion}{7.55in}
-\node[anchor=north west,text width=8.45in,align=left,fill=pale,
-  rounded corners=.05in,inner sep=.14in,text=ink,font=\smallfont]
-  at (10.74,7.18) {\textbf{Comparison to read at a glance:}
-  naive independent tiles disagree in overlap and averaging blurs or reveals seams.
-  InfiniteDiffusion coordinates the diffusion trajectory itself, so shared locations
-  remain coherent. The same idea tiles in $x$ and $y$ now; extending the cache and
-  dependency graph along $t$ gives full spatiotemporal tiling.};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,25.44) {$W_1(u\mid c)$ (m/s) $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,24.92) {$W_1(v\mid c)$ (m/s) $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{19}{22}\selectfont] at (20.96,24.40) {Tail error $0.1\%$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,23.88) {$\mathrm{SR}_{E}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,23.36) {$\mathrm{SR}_{\rm div}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,22.84) {$\mathrm{SR}_{\rm vort}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,22.32) {$L_{\rm eff}$ (km) $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{18}{21}\selectfont] at (20.96,21.80) {$W_1$ shear $u$ (m/s)/km $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{18}{21}\selectfont] at (20.96,21.28) {$W_1$ shear $v$ (m/s)/km $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,20.76) {$\mathrm{SR}_{\rm time}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{18.5}{21}\selectfont] at (20.96,20.24) {Final spread ratio $\to1$};
 
-\node[anchor=north,text width=8.45in,align=left,fill=paleorange,
-  rounded corners=.05in,inner sep=.14in,text=ink,font=\smallfont]
-  at (14.975,3.83) {\textcolor{navy}{\textbf{Next for InfiniteDiffusion}}\enspace
-  Tile four-hour blocks along time, validate continuity at temporal boundaries, and
-  report the same multi-tile-minus-single-tile penalty used for spatial seams.};
+\foreach \y/\v in {25.44/2.08,24.92/2.67,24.40/2.92,
+  23.88/0.25,23.36/0.25,22.84/0.25,22.32/{56$^\dagger$},
+  21.80/0.20,21.28/0.10,20.76/0.28,20.24/1.04}
+  \node[text=ink,font=\fontsize{19}{22}\selectfont] at (24.31,\y) {\v};
+\foreach \y/\v in {25.44/4.69,24.92/2.08,24.40/2.34,
+  23.88/0.75,23.36/0.87,22.84/0.72,22.32/{56$^\dagger$},
+  21.80/0.31,21.28/0.97,20.76/1.19,20.24/0.53}
+  \node[text=ink,font=\fontsize{19}{22}\selectfont] at (25.63,\y) {\v};
+\foreach \y/\v in {25.44/12.71,24.92/5.02,24.40/18.94,
+  23.88/2.73,23.36/5.23,22.84/2.16,22.32/842,
+  21.80/3.62,21.28/0.61,20.76/4.19,20.24/0.11}
+  \node[text=ink,font=\fontsize{19}{22}\selectfont] at (26.98,\y) {\v};
+\foreach \y/\v in {25.44/3.00,24.92/4.04,24.40/13.54,
+  23.88/1.53,23.36/1.56,22.84/1.53,22.32/337,
+  21.80/1.00,21.28/1.01,20.76/5.46,20.24/0.20}
+  \node[text=ink,font=\fontsize{19}{22}\selectfont\bfseries] at (28.55,\y) {\v};
+\end{scope}
 
-% ===========================================================================
-% COLUMN 3: evaluation
-% ===========================================================================
-\card{20.00}{1.25}{29.60}{35.70}
-\sectitle{20.20}{35.70}{4}{Evaluating realistic winds}
-\node[anchor=north,text width=8.55in,align=left,text=ink,font=\smallfont]
-  at (24.80,34.84) {No single score defines realism. We compare every generator with
-  held-out ERA5 and ask which physical or statistical failure each metric exposes.};
+% Restore the PSD chart's original aspect ratio instead of forcing its height.
+\fill[white] (20.12,18.16) rectangle (29.48,22.82);
+\node[anchor=north,inner sep=0pt] at (24.80,22.72)
+  {\includegraphics[width=9.20in]{figures/psd_final_methods.png}};
 
-\node[anchor=north west,text width=8.55in,align=left,fill=paleteal,
-  rounded corners=.05in,inner sep=.15in,text=ink,font=\tinyfont]
-  at (20.46,33.52) {\textcolor{navy}{\textbf{What each comparison means}}\\[1mm]
-  \textbf{ERA5} is the reanalysis target. \textbf{ERA5 floor} compares two disjoint
-  held-out subsets and shows natural sampling variation, not a model.\\
-  \textbf{Fitted simplex} is unlimited procedural noise whose moments, correlations,
-  and scale are tuned to ERA5; it cannot answer location/date-conditioned queries.\\
-  \textbf{BLE-VAE} is the previous learned regional generator: one bounded patch and
-  ten levels. Extending it would require an external averaging scheme because it has no
-  diffusion trajectory to coordinate.};
+% Expand the spectral-residual explainer upward into the unused chart gap.
+\fill[white] (20.20,16.38) rectangle (29.40,18.72);
+\draw[fill=pale,draw=line,line width=1pt,rounded corners=.06in]
+  (20.30,16.48) rectangle (29.30,18.65);
+\node[anchor=north west,text=navy,font=\fontsize{23}{26}\selectfont\bfseries]
+  at (20.52,18.43) {What does $\mathrm{SR}_{E}$ measure?};
+\draw[gray!80,line width=2.8pt]
+  plot[smooth] coordinates {(20.56,17.75) (21.10,17.90) (21.64,17.77)
+    (22.18,17.62) (22.72,17.43) (23.28,17.29)};
+\draw[navy,dashed,line width=2.8pt]
+  plot[smooth] coordinates {(20.56,17.38) (21.10,17.55) (21.64,17.48)
+    (22.18,17.27) (22.72,17.06) (23.28,16.99)};
+\foreach \x/\ya/\yb in {21.10/17.90/17.55,21.64/17.77/17.48,
+  22.18/17.62/17.27,22.72/17.43/17.06}
+  \draw[<->,orange,line width=1.6pt] (\x,\ya) -- (\x,\yb);
+\node[anchor=west,text=muted,font=\fontsize{18}{21}\selectfont] at (23.32,17.36) {ERA5};
+\node[anchor=west,text=navy,font=\fontsize{18}{21}\selectfont\bfseries] at (23.32,17.02) {model};
+\node[anchor=west,text width=4.45in,align=left,text=ink,
+  font=\fontsize{20}{24}\selectfont]
+  at (24.58,17.60) {Mean log-scale gap between model and ERA5 energy spectra.
+  \textbf{Lower is better.}};
 
-\subhead{20.46,29.45}{Four complementary views of realism}{8.55in}
-\node[anchor=north west,text width=4.05in,align=left,fill=pale,
-  rounded corners=.05in,inner sep=.13in,text=ink,font=\tinyfont]
-  at (20.46,28.72) {\textcolor{navy}{\textbf{Distributions}}\\
-  $W_1(u)$, $W_1(v)$, $W_1(|V|)$; 1\% and 0.1\% tail error; condition-matched $W_1$.
-  \textit{Are speeds and extremes plausible?}};
-\node[anchor=north west,text width=4.05in,align=left,fill=pale,
-  rounded corners=.05in,inner sep=.13in,text=ink,font=\tinyfont]
-  at (25.10,28.72) {\textcolor{navy}{\textbf{Spatial physics}}\\
-  Spectral residuals of energy, divergence, and vorticity; effective resolution; shear.
-  \textit{Is energy placed at the right scales?}};
-\node[anchor=north west,text width=4.05in,align=left,fill=pale,
-  rounded corners=.05in,inner sep=.13in,text=ink,font=\tinyfont]
-  at (20.46,25.95) {\textcolor{navy}{\textbf{Vertical structure}}\\
-  Opposing-wind fraction; jet area and elongation. \textit{Can altitude changes expose
-  meaningfully different winds?}};
-\node[anchor=north west,text width=4.05in,align=left,fill=pale,
-  rounded corners=.05in,inner sep=.13in,text=ink,font=\tinyfont]
-  at (25.10,25.95) {\textcolor{navy}{\textbf{Temporal physics}}\\
-  Temporal spectral residual; tracer log-MSD and final spread. \textit{Do winds persist
-  and transport particles realistically?}};
+% Clarify the distribution metric and rebuild the card so no previous text
+% remains underneath the corrected explanation.
+\fill[paleteal] (20.32,12.49) rectangle (24.68,16.12);
+\fill[white] (22.55,12.20) rectangle (24.62,12.49);
+\draw[line,line width=.55pt] (22.55,12.49)--(24.62,12.49);
+\node[anchor=north west,text width=3.95in,align=left,text=navy,
+  font=\fontsize{20.5}{24}\selectfont\bfseries]
+  at (20.56,15.98) {What does Wasserstein\\distance measure?};
+\draw[muted,->,line width=1.2pt] (20.55,12.92)--(20.55,14.92);
+\draw[muted,->,line width=1.2pt] (20.55,12.92)--(22.68,12.92);
+\draw[gray!75,line width=2.7pt]
+  plot[smooth] coordinates {(20.58,12.98) (20.93,13.17) (21.23,13.88)
+    (21.48,14.62) (21.73,14.10) (22.05,13.35) (22.38,13.02)};
+\draw[navy,dashed,line width=2.7pt]
+  plot[smooth] coordinates {(20.62,12.98) (21.02,13.12) (21.40,13.55)
+    (21.73,14.36) (22.00,14.52) (22.25,14.07) (22.58,13.05)};
+\draw[<->,orange,line width=1.4pt] (21.28,13.70)--(21.62,13.70);
+\draw[<->,orange,line width=1.4pt] (21.43,14.12)--(21.82,14.12);
+\node[anchor=north west,text width=1.68in,align=left,text=ink,
+  font=\fontsize{15.5}{20}\selectfont]
+  at (22.86,15.10) {\hyphenpenalty=10000 Distance\\between ERA5 and\\model wind\\
+  distributions at\\fixed location,\\month, and hour $t$.\\[1mm]
+  \textbf{Lower is better.}};
 
-\subhead{20.46,23.05}{A diagnostic subset of the full evaluation}{8.55in}
-\node[anchor=north,inner sep=0pt,text=ink] at (24.80,22.36) {%
-  \begingroup
-  \setlength{\tabcolsep}{0.045in}\renewcommand{\arraystretch}{1.16}
-  \fontsize{17}{20}\selectfont
-  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{1.35in}
-    >{\raggedright\arraybackslash}p{1.93in}
-    >{\centering\arraybackslash}p{.92in}
-    >{\centering\arraybackslash}p{.98in}
-    >{\centering\arraybackslash}p{.92in}
-    >{\centering\arraybackslash}p{.95in}@{}}
-    \rowcolor{navy!10}\textbf{view}&\textbf{metric}&\textbf{ERA5 floor}&
-      \textbf{simplex}&\textbf{BLE}&\cellcolor{paleteal}\textbf{ours}\\
-    \midrule
-    \textcolor{navy}{\textbf{spatial}}&$\mathrm{SR}_{E}$ $\downarrow$&0.25&0.75&2.73&\cellcolor{paleteal}\textbf{1.53}\\
-    &$\mathrm{SR}_{\rm div}$ $\downarrow$&0.25&0.87&5.23&\cellcolor{paleteal}\textbf{1.56}\\
-    \addlinespace[1mm]
-    \textcolor{navy}{\textbf{distribution}}&$W_1(\mathrm{condition})$ $\downarrow$&2.38&3.38&N/A&\cellcolor{paleteal}\textbf{3.52}\\
-    &0.1\% tail error $\downarrow$&2.92&2.34&18.94&\cellcolor{paleteal}\textbf{13.54}\\
-    \addlinespace[1mm]
-    \textcolor{navy}{\textbf{vertical}}&opposing-wind error $\downarrow$&0.00&0.02&0.37&\cellcolor{paleteal}\textbf{0.16}\\
-    &jet elongation $\to1$&1.17&0.85&1.76&\cellcolor{paleteal}\textbf{0.95}\\
-    \bottomrule
-  \end{tabular}\endgroup};
-
-\node[anchor=north,text width=8.45in,align=left,fill=paleorange,
-  rounded corners=.05in,inner sep=.14in,text=ink,font=\tinyfont]
-  at (24.80,16.88) {\textbf{How to read it:} closer to the ERA5 floor is better.
-  Different rankings are useful: our model improves on BLE spatially and in jet shape,
-  while fitted simplex still wins spectra, tails, and opposing winds. Conditioning has
-  not yet closed the distribution gap. Temporal rows await long-horizon tiling.};
-
-% D07: simplified spectrum + residual explanation.
-\artslot{20.46}{8.38}{29.14}{14.62}{D07}{From a power spectrum to one spectral-residual score}{7.70in}
-
-\node[anchor=north,text width=8.45in,align=center,text=navy,
-  font=\fontsize{26}{32}\selectfont\bfseries]
-  at (24.80,7.78) {Extent is solved; realism is still limited by the base denoiser.};
-\node[anchor=north,text width=8.45in,align=left,fill=paleteal,
-  rounded corners=.05in,inner sep=.15in,text=ink,font=\smallfont]
-  at (24.80,6.82) {\textbf{Current evidence:} seamless spatial queries do not damage the
-  metric suite, but the base model is too smooth, under-produces extremes, and rarely
-  creates opposing winds across height.};
-\node[anchor=north,text width=8.45in,align=left,fill=paleorange,
-  rounded corners=.05in,inner sep=.14in,text=ink,font=\smallfont]
-  at (24.80,4.13) {\textcolor{navy}{\textbf{Next for evaluation}}\enspace
-  Use a simplified baseline set in every plot; add long-horizon temporal metrics after
-  time tiling; evaluate whether the resulting wind worlds improve balloon policies.};
-
-\node[anchor=south,text width=8.65in,align=center,text=muted,font=\tinyfont]
-  at (24.80,1.55) {Goslin et al., \textit{InfiniteDiffusion} \quad$\cdot$\quad
-  Karras et al., EDM (NeurIPS 2022) \quad$\cdot$\quad Hersbach et al., ERA5 (QJRMS 2020)};
+% --------------------------------------------------------------------------
+% Section 6 conclusion.
+% --------------------------------------------------------------------------
+\fill[white] (19.86,1.02) rectangle (29.78,7.25);
+\card{20.00}{1.25}{29.60}{7.05}
+\sectitle{20.20}{7.05}{5}{Conclusion}
+\node[anchor=north,text width=8.65in,align=left,fill=paleteal,
+  rounded corners=.05in,inner sep=.17in,text=ink,font=\fontsize{25}{30}\selectfont]
+  at (24.80,6.38) {InfiniteDiffusion creates unbounded, conditional wind
+  environments and outperforms prior bounded, unconditional balloon wind generators in
+  our evaluation.};
+\node[anchor=north west,text width=4.05in,align=left,fill=palenavy,
+  rounded corners=.05in,inner sep=.17in,text=ink,font=\fontsize{23}{28}\selectfont]
+  at (20.42,4.38) {\textcolor{navy}{\textbf{What worked}}\\[2mm]
+  \pbullet Fast, infinite, lazy generation.\\[1mm]
+  \pbullet Consistency across tiles.\\[1mm]
+  \pbullet Space/time conditioning.};
+\node[anchor=north west,text width=4.05in,align=left,fill=paleorange,
+  rounded corners=.05in,inner sep=.17in,text=ink,font=\fontsize{23}{28}\selectfont]
+  at (25.10,4.38) {\textcolor{navy}{\textbf{What remains}}\\[2mm]
+  \pbullet Coarse conditioning for the base diffusion model.\\[1mm]
+  \pbullet Examine how tile count affects realism and runtime.};
+\node[anchor=south,text width=8.65in,align=center,text=muted,font=\fontsize{17}{21}\selectfont]
+  at (24.80,1.38) {Goslin et al., \textit{InfiniteDiffusion} \quad$\cdot$\quad
+  Karras et al., EDM \quad$\cdot$\quad Hersbach et al., ERA5};
 
 \end{tikzpicture}
 \end{document}

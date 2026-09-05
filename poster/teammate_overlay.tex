@@ -1,0 +1,178 @@
+% Main header: larger title and simplified Cornell identity.
+\fill[navy] (0.38,36.20) rectangle (29.62,39.62);
+\node[anchor=north west,text=white,font=\fontsize{68}{73}\selectfont\bfseries]
+  at (0.82,39.26) {Unbounded Wind Fields for Stratospheric Balloon Simulation};
+\node[anchor=north west,text=white,font=\fontsize{34}{40}\selectfont\bfseries]
+  at (0.84,37.52) {Shaurya Sen\hspace{0.18in}\textcolor{white!55}{\textbullet}
+  \hspace{0.18in}Rohan Shankar};
+\node[anchor=north west,text=white!82,font=\fontsize{26}{31}\selectfont]
+  at (0.84,36.82) {Faculty: Prof. Sarah Dean \quad|\quad
+  Advisors: Vinamr Jain and Yujin Kim};
+% Compact Cornell mark used because the teammate's external seal asset was not
+% included with poster-1.tex.
+\draw[white,line width=2.2pt] (28.25,37.91) circle[radius=.82in];
+\draw[white!75,line width=1.2pt] (28.25,37.91) circle[radius=.64in];
+\node[text=white,font=\fontsize{30}{34}\selectfont\bfseries] at (28.25,38.05) {CU};
+\node[text=white!82,font=\fontsize{16}{19}\selectfont\bfseries] at (28.25,37.62) {1865};
+
+% Five-section hierarchy and the two requested middle-column headers.
+\fill[white] (0.45,35.34) rectangle (7.15,36.06);
+\draw[line,line width=1pt] (0.45,35.70)--(9.90,35.70);
+\sectitle{0.60}{35.70}{1}{Introduction}
+
+\fill[white] (0.45,17.36) rectangle (5.60,18.08);
+\draw[line,line width=1pt] (0.60,17.75)--(9.74,17.75);
+\node[anchor=west,minimum width=5.02in,align=left,fill=navy,text=white,
+  rounded corners=0.07in,inner xsep=0.17in,inner ysep=0.08in,
+  font=\fontsize{31}{35}\selectfont\bfseries]
+  at (0.60,17.75) {\makebox[0.46in][l]{2}Base Diffusion Model};
+
+\fill[white] (10.25,35.34) rectangle (18.95,36.06);
+\draw[line,line width=1pt] (10.25,35.70)--(19.70,35.70);
+\sectitle{10.40}{35.70}{3}{Infinite Diffusion}
+
+\fill[white] (10.25,13.34) rectangle (17.45,14.08);
+\node[anchor=west,text=navy,font=\fontsize{29}{34}\selectfont\bfseries]
+  at (10.48,13.72) {Infinite Diffusion in action};
+
+% First column: move the complete globe visual upward and replace contributions.
+\fill[white] (0.58,21.78) rectangle (9.78,33.15);
+\node[anchor=north,inner sep=0pt] at (5.175,34.25)
+  {\includegraphics[height=11.30in]{figures/wind_sphere_selection_v2.png}};
+\fill[white] (0.72,17.90) rectangle (9.82,22.82);
+\node[anchor=north west,text width=8.55in,align=left,fill=paleorange,
+  rounded corners=.05in,inner sep=.18in,text=ink,font=\fontsize{29}{35}\selectfont]
+  at (0.86,22.82) {\hyphenpenalty=10000\exhyphenpenalty=10000
+  \textcolor{navy}{\textbf{Our contributions}}\\[1mm]
+  \pbullet InfiniteDiffusion for coherent, unbounded wind generation that outperforms prior balloon generators.\\
+  \pbullet A diffusion wind model conditioned on location and time.\\
+  \pbullet A realism evaluation spanning distributions, spatial physics, vertical structure, and time.};
+
+% Column 2 result-caption wording from the teammate version.
+\node[anchor=north,text width=8.15in,align=center,fill=paleteal,
+  rounded corners=.05in,inner sep=.10in,text=navy,
+  font=\fontsize{20}{25}\selectfont\bfseries]
+  at (14.975,6.58) {Guides mark $64\!\times\!64$ boundaries; trained-model tiling penalties
+  are approximately zero in our evaluation.};
+
+% Third-column hierarchy.
+\fill[white] (19.98,35.34) rectangle (28.60,36.06);
+\draw[line,line width=1pt] (20.05,35.70)--(29.55,35.70);
+\sectitle{20.20}{35.70}{4}{Evaluation and Results}
+\fill[white] (20.05,30.08) rectangle (23.55,30.78);
+\node[anchor=west,fill=navy,text=white,rounded corners=0.07in,
+  inner xsep=0.17in,inner ysep=0.08in,
+  font=\fontsize{29}{33}\selectfont\bfseries]
+  at (20.20,30.45) {Results};
+
+% Teammate's enlarged results table.
+\fill[white] (20.10,22.70) rectangle (29.50,29.38);
+\begin{scope}[yshift=2.90in]
+\fill[pale] (20.16,25.70) rectangle (29.44,26.36);
+\fill[navy] (20.16,25.70) rectangle (20.82,26.36);
+\fill[paleteal] (27.66,19.95) rectangle (29.44,26.36);
+\fill[paleteal] (20.16,24.05) rectangle (20.82,25.70);
+\fill[palenavy] (20.16,21.85) rectangle (20.82,24.05);
+\fill[paleorange] (20.16,20.75) rectangle (20.82,21.85);
+\fill[pale] (20.16,19.95) rectangle (20.82,20.75);
+\draw[line,line width=1.0pt] (20.16,19.95) rectangle (29.44,26.36);
+\foreach \x in {20.82,23.66,24.96,26.30,27.66}
+  \draw[line,line width=.65pt] (\x,19.95) -- (\x,26.36);
+\foreach \y in {25.70,25.15,24.60,24.05,23.50,22.95,22.40,21.85,21.30,20.75,20.35,19.95}
+  \draw[line,line width=.55pt] (20.82,\y) -- (29.44,\y);
+\foreach \y in {24.05,21.85,20.75}
+  \draw[line,line width=1.2pt] (20.16,\y) -- (29.44,\y);
+
+\node[text=white,font=\fontsize{15}{17}\selectfont\bfseries] at (20.49,26.03) {TYPE};
+\node[anchor=west,text=ink,font=\fontsize{23}{26}\selectfont\bfseries] at (20.96,26.03) {Metric};
+\node[text=ink,font=\fontsize{23}{26}\selectfont\bfseries] at (24.31,26.03) {Floor};
+\node[text=ink,font=\fontsize{19}{21}\selectfont\bfseries] at (25.63,26.03) {\shortstack{White\\Noise}};
+\node[text=ink,font=\fontsize{22}{25}\selectfont\bfseries] at (26.98,26.03) {BLE-VAE};
+\node[text=ink,font=\fontsize{23}{26}\selectfont\bfseries] at (28.55,26.03) {Ours};
+\node[rotate=90,text=teal,inner sep=0pt,font=\fontsize{15}{17}\selectfont\bfseries] at (20.49,24.875) {DISTRIBUTIONS};
+\node[rotate=90,text=navy,inner sep=0pt,font=\fontsize{15}{17}\selectfont\bfseries] at (20.49,22.95) {SPATIAL PHYSICS};
+\node[rotate=90,text=orange,inner sep=0pt,font=\fontsize{13}{15}\selectfont\bfseries] at (20.49,21.30) {VERTICAL};
+\node[rotate=90,text=muted,inner sep=0pt,font=\fontsize{10.5}{12}\selectfont\bfseries] at (20.49,20.35) {TEMPORAL};
+
+\node[anchor=west,text=ink,font=\fontsize{18.5}{21}\selectfont] at (20.96,25.425) {$W_1((u,v)\mid c)$ (m/s) $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,24.875) {$W_1(|V|)$ (m/s) $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,24.325) {Tail error $0.1\%$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,23.775) {$\mathrm{SR}_{E}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,23.225) {$\mathrm{SR}_{\rm div}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,22.675) {$\mathrm{SR}_{\rm vort}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,22.125) {$L_{\rm eff}$ (km) $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{18.5}{21}\selectfont] at (20.96,21.575) {$W_1$ shear $u$ (m/s)/km $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{18.5}{21}\selectfont] at (20.96,21.025) {$W_1$ shear $v$ (m/s)/km $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,20.55) {$\mathrm{SR}_{\rm time}$ $\downarrow$};
+\node[anchor=west,text=ink,font=\fontsize{20}{23}\selectfont] at (20.96,20.15) {Trajectory spread};
+
+\foreach \x/\a/\b/\c/\d/\e/\f/\g/\h/\i in {
+  24.31/2.38/1.11/2.92/0.25/0.25/0.25/{56$^\dagger$}/0.20/0.10,
+  25.63/3.13/1.14/2.59/8.96/8.98/8.99/3367/18.44/15.33,
+  26.98/{N/A}/4.56/18.94/2.73/5.23/2.16/842/3.62/0.61}
+  {\node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,25.425) {\a};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,24.875) {\b};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,24.325) {\c};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,23.775) {\d};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,23.225) {\e};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,22.675) {\f};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,22.125) {\g};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,21.575) {\h};
+   \node[text=ink,font=\fontsize{20}{23}\selectfont] at (\x,21.025) {\i};}
+\foreach \y/\v in {25.425/3.52,24.875/2.98,24.325/13.54,23.775/1.53,23.225/1.56,22.675/1.53,22.125/337,21.575/1.00,21.025/1.01}
+  \node[text=ink,font=\fontsize{20}{23}\selectfont\bfseries] at (28.55,\y) {\v};
+\foreach \y in {20.55,20.15}
+  {\node[text=ink,font=\fontsize{19}{22}\selectfont] at (24.31,\y) {N/A};
+   \node[text=ink,font=\fontsize{19}{22}\selectfont] at (25.63,\y) {N/A};
+   \node[text=ink,font=\fontsize{19}{22}\selectfont] at (26.98,\y) {N/A};
+   \node[text=ink,font=\fontsize{19}{22}\selectfont\bfseries] at (28.55,\y) {N/A};}
+\end{scope}
+
+% Restore the PSD chart's original aspect ratio and expand the residual explainer.
+\fill[white] (20.12,18.16) rectangle (29.48,22.82);
+\node[anchor=north,inner sep=0pt] at (24.80,22.72)
+  {\includegraphics[width=9.20in]{figures/psd_final_methods.png}};
+\fill[white] (20.20,16.38) rectangle (29.40,18.72);
+\draw[fill=pale,draw=line,line width=1pt,rounded corners=.06in]
+  (20.30,16.48) rectangle (29.30,18.65);
+\node[anchor=north west,text=navy,font=\fontsize{23}{26}\selectfont\bfseries]
+  at (20.52,18.43) {What does $\mathrm{SR}_{E}$ measure?};
+\draw[gray!80,line width=2.8pt]
+  plot[smooth] coordinates {(20.56,17.75) (21.10,17.90) (21.64,17.77)
+    (22.18,17.62) (22.72,17.43) (23.28,17.29)};
+\draw[navy,dashed,line width=2.8pt]
+  plot[smooth] coordinates {(20.56,17.38) (21.10,17.55) (21.64,17.48)
+    (22.18,17.27) (22.72,17.06) (23.28,16.99)};
+\foreach \x/\ya/\yb in {21.10/17.90/17.55,21.64/17.77/17.48,
+  22.18/17.62/17.27,22.72/17.43/17.06}
+  \draw[<->,orange,line width=1.6pt] (\x,\ya) -- (\x,\yb);
+\node[anchor=west,text=muted,font=\fontsize{18}{21}\selectfont] at (23.32,17.36) {ERA5};
+\node[anchor=west,text=navy,font=\fontsize{18}{21}\selectfont\bfseries] at (23.32,17.02) {model};
+\node[anchor=west,text width=4.45in,align=left,text=ink,
+  font=\fontsize{20}{24}\selectfont]
+  at (24.58,17.60) {Mean log-scale gap between model and ERA5 energy spectra.
+  \textbf{Lower is better.}};
+
+% Teammate's conclusion and five-section numbering.
+\fill[white] (19.86,1.02) rectangle (29.78,7.25);
+\card{20.00}{1.25}{29.60}{7.05}
+\sectitle{20.20}{7.05}{5}{Conclusion}
+\node[anchor=north,text width=8.65in,align=left,fill=paleteal,
+  rounded corners=.05in,inner sep=.17in,text=ink,font=\fontsize{25}{30}\selectfont]
+  at (24.80,6.38) {InfiniteDiffusion creates unbounded, conditional wind
+  environments and outperforms prior bounded, unconditional balloon wind generators in
+  our evaluation.};
+\node[anchor=north west,text width=4.05in,align=left,fill=palenavy,
+  rounded corners=.05in,inner sep=.17in,text=ink,font=\fontsize{23}{28}\selectfont]
+  at (20.42,4.38) {\textcolor{navy}{\textbf{What worked}}\\[2mm]
+  \pbullet Fast, infinite, lazy generation.\\[1mm]
+  \pbullet Consistency across tiles.\\[1mm]
+  \pbullet Space/time conditioning.};
+\node[anchor=north west,text width=4.05in,align=left,fill=paleorange,
+  rounded corners=.05in,inner sep=.17in,text=ink,font=\fontsize{23}{28}\selectfont]
+  at (25.10,4.38) {\textcolor{navy}{\textbf{What remains}}\\[2mm]
+  \pbullet Coarse conditioning for the base diffusion model.\\[1mm]
+  \pbullet Examine how tile count affects realism and runtime.};
+\node[anchor=south,text width=8.65in,align=center,text=muted,font=\fontsize{17}{21}\selectfont]
+  at (24.80,1.38) {Goslin et al., \textit{InfiniteDiffusion} \quad$\cdot$\quad
+  Karras et al., EDM \quad$\cdot$\quad Hersbach et al., ERA5};
