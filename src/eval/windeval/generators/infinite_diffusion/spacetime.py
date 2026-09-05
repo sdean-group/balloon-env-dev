@@ -393,6 +393,20 @@ class SpaceTimeSampler:
     training (including the 0–360 vs ±180 longitude branch guard).
     """
 
+    # Defaults for every sampler knob (a sampler built without __init__, e.g. a bare
+    # ``object.__new__(SpaceTimeSampler)`` in tests, is the deterministic ODE sampler with
+    # no guidance and no coarse conditioning — exactly the pre-Phase-5b behaviour).
+    s_churn: float = 0.0
+    s_min: float = 0.05
+    s_max: float = 50.0
+    s_noise: float = 1.003
+    guidance: float = 1.0
+    coarse_project: bool = True
+    coarse_factor: int = 0
+    coarse_flag: bool = False
+    coarse_residual: bool = False
+    coarse_scale: float = 1.0
+
     def __init__(
         self,
         ckpt_path: str | Path,
@@ -486,6 +500,8 @@ class SpaceTimeSampler:
             d_u = self.model(x, s, cond=cond, tfeat=tfeat, coarse=torch.zeros_like(coarse),
                              coarse_mask=torch.zeros_like(ones))
             d = d_u + self.guidance * (d_c - d_u)
+        elif coarse is None and not self.coarse_flag:
+            d = self.model(x, s, cond=cond, tfeat=tfeat)      # no coarse pathway at all
         else:
             mask = (torch.ones(B, device=x.device, dtype=x.dtype)
                     if self.coarse_flag else None)
