@@ -14,5 +14,5 @@ At the start of a session that involves planning or prioritizing (not pure mecha
 
 ## Practical notes
 
-- GPU work runs on the Kahan cluster (SLURM + Podman): see `/Users/shauryasen/Dev/shaurya-hub/research/docs/kahan-reference.md`.
+- GPU work runs on Sarah Dean's Unicorn cluster (SLURM): see `/Users/shauryasen/Dev/shaurya-hub/research/docs/unicorn-reference.md`. Kahan access ended with summer 2026; the Kahan sbatch scripts and `/zooper2` paths in this repo are historical.
 - The public README currently describes only the simplified grid environment; it is slated for an update to cover the diffusion/InfiniteDiffusion work before being linked from Shaurya's resume.
