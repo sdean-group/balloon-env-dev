@@ -1,0 +1,45 @@
+# Stage 1 - whole-sphere coarse wind generator, HEALPix nside 32 (~1.83 deg), levels 49-66 (u,v).
+# Blocks of 8 frames x 6 h = 48 h (synoptic e-folding ~30 h at this resolution). Coordinates
+# (lat/90, sin lon, cos lon) per pixel, annual/semiannual/diurnal harmonics per frame, and a
+# QBO-style slow-state scalar (tropical mean u at ~53 hPa over the previous 30 days) with a
+# presence flag, so the model can carry interannual stratospheric phases the harmonics cannot.
+data:
+  stores:
+    - /scratch/sps252/era5_hpx                  # coarse group of the 2022-2023 store
+    - ~/data/era5_hpx_coarse_2020_2021          # coarse-only 2020-2021
+  layout_dir: ~/data/hpx_layout
+  n_frames: 8
+  stride_hours: 6
+  slow_index: true
+  lookback_hours: 720
+  storage_dtype: float16
+  val_run_fraction: 0.04
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  temporal_kernel: 3
+  sigma_data: 1.0
+
+train:
+  batch_size: 6                 # 12,288 px x 8 frames x 36 ch; measure peak memory on the Ada first
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 300000
+  warmup_steps: 1000
+  num_workers: 4
+  amp: true
+  out_dir: /scratch/sps252/runs/stage1_hpx32
+  ckpt_every: 2000
+  snapshot_every: 25000
+  log_every: 100
+  val_every: 2000
+  val_batches: 8
+  resume: true
+  device: cuda
+  seed: 0
+  wandb_project: balloon-hpx
+  wandb_mode: offline
+  wandb_run_name: stage1-hpx32
