@@ -61,8 +61,29 @@ def _band_means(u: np.ndarray, lat: np.ndarray, bands=np.arange(-90, 91, 10)) ->
     return np.array([u[..., (lat >= a) & (lat < b)].mean() for a, b in zip(bands[:-1], bands[1:])])
 
 
+def _slow_series(stores: list[str], nside: int) -> tuple[np.ndarray, np.ndarray]:
+    """(hours, tropical mean of channel 0) over the given coarse stores, cached per store."""
+    import healpy as hp
+    import zarr
+    lon, lat = hp.pix2ang(nside, np.arange(12 * nside * nside), nest=True, lonlat=True)
+    trop = np.where(np.abs(lat) < 10.0)[0]
+    hs, us = [], []
+    for st in stores:
+        st = Path(st).expanduser(); cache = st / "slow_series.npy"
+        root = zarr.open_group(str(st), mode="r"); hours = np.asarray(root["time"][:], dtype=np.int64)
+        if cache.exists() and np.load(cache).shape[0] == len(hours):
+            series = np.load(cache)
+        else:
+            arr = root["coarse/uv"]; series = np.full(len(hours), np.nan, dtype=np.float32); step = arr.chunks[0]
+            for a in range(0, len(hours), step):
+                series[a:a + step] = arr[a:a + step, 0, :][:, trop].mean(axis=1)
+            np.save(cache, series)
+        ok = ~np.isnan(series); hs.append(hours[ok]); us.append(series[ok])
+    return np.concatenate(hs), np.concatenate(us)
+
+
 def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, seeds: int,
-             out: Path, device: str = "cuda", num_steps: int = 18) -> dict:
+             out: Path, device: str = "cuda", num_steps: int = 18, slow_from: list[str] | None = None) -> dict:
     import healpy as hp
     import zarr
     sampler = HpxSampler(ckpt, layout, num_steps=num_steps, device=device)
@@ -84,16 +105,27 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, see
         starts += [int(cands[i]) for i in pick]
     print(f"[eval] ckpt step {sampler.step}; {len(starts)} blocks x {seeds} seeds x {tau} frames; nside {nside}", flush=True)
 
-    # slow-state index from the held-out store's own past is not available (it holds only the
-    # 7 held-out days); use the model's training-mean (present=0 -> "absent") for all samples.
+    # slow-state (QBO) index: the held-out week has no 30-day history of its own, but the
+    # training stores hold the hours before it (days 15-end and 1-7 of the surrounding
+    # months); build the tropical channel-0 series from them once and average causally.
+    slow_series = _slow_series(slow_from, nside) if slow_from else None
+    lookback = int(sampler.cfg.get("lookback_hours", 720))
     gen = {s: [] for s in range(seeds)}
-    era = []
+    era, slow_used = [], []
     t0 = time.time()
     for h0 in starts:
         hs = h0 + stride * np.arange(tau)
         era.append(np.stack([ref[hour_to_row[int(h)]] for h in hs]))            # (τ, C, npix)
+        sv = None
+        if slow_series is not None:
+            sh, su = slow_series
+            m = (sh >= h0 - lookback) & (sh < h0)
+            if m.sum() >= 0.5 * lookback:
+                sv = float(su[m].mean())
+        slow_used.append(sv)
         for s in range(seeds):
-            gen[s].append(sampler.sample_block(hs, seed=1000 * s + h0 % 997))
+            gen[s].append(sampler.sample_block(hs, seed=1000 * s + h0 % 997, slow_value=sv))
+    print(f"[eval] slow index present for {sum(v is not None for v in slow_used)}/{len(starts)} blocks", flush=True)
     print(f"[eval] sampled in {time.time() - t0:.0f}s", flush=True)
     era = np.stack(era)                                                          # (B, τ, C, npix)
     if np.isnan(era).any():
@@ -101,7 +133,8 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, see
                            "finish (or repair) the reference ingest before scoring")
     gen = {s: np.stack(v) for s, v in gen.items()}
     g0 = gen[0]
-    res = {"ckpt": str(ckpt), "step": sampler.step, "blocks": len(starts), "seeds": seeds}
+    res = {"ckpt": str(ckpt), "step": sampler.step, "blocks": len(starts), "seeds": seeds,
+           "slow_index_blocks": int(sum(v is not None for v in slow_used))}
 
     # --- spectra (channel-mean of |log ratio| over l >= 10), with the ERA5 self-split floor
     lmax = 3 * nside - 1
@@ -135,10 +168,15 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, see
     # --- dispersion: seed spread vs ERA5 day-to-day spread at the same hour of day
     if seeds >= 2:
         seed_rms = float(np.sqrt(((gen[0] - gen[1]) ** 2).mean()))
-        # pair each block with another block of the same month at the same hour-of-day
-        hod = np.array([(h0 % 24) for h0 in starts]); mon = np.array([str(m)[:7] for m in months[[hour_to_row[h] for h in starts]]])
-        pairs = [(i, j) for i in range(len(starts)) for j in range(i + 1, len(starts)) if hod[i] == hod[j] and mon[i] == mon[j]]
-        day_rms = float(np.sqrt(np.mean([((era[i] - era[j]) ** 2).mean() for i, j in pairs]))) if pairs else float("nan")
+        # ERA5 at the same hours one day later (or earlier) inside the held-out week
+        diffs = []
+        for b, h0 in enumerate(starts):
+            for off in (24, -24):
+                hs2 = h0 + off + stride * np.arange(tau)
+                if all(int(h) in hour_to_row for h in hs2):
+                    other = np.stack([ref[hour_to_row[int(h)]] for h in hs2])
+                    diffs.append(((era[b] - other) ** 2).mean()); break
+        day_rms = float(np.sqrt(np.mean(diffs))) if diffs else float("nan")
         res["seed_spread_rms"], res["era5_day_spread_rms"] = seed_rms, day_rms
         res["coverage"] = seed_rms / day_rms if day_rms == day_rms else float("nan")
 
@@ -165,9 +203,11 @@ def main(argv=None) -> None:
     ap.add_argument("--blocks-per-month", type=int, default=6); ap.add_argument("--seeds", type=int, default=2)
     ap.add_argument("--steps", type=int, default=18); ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--slow-from", nargs="*", default=["/scratch/sps252/era5_hpx", "~/data/era5_hpx_coarse_2020_2021"],
+                    help="training coarse stores used to compute the slow-state index before each block")
     a = ap.parse_args(argv)
     evaluate(a.ckpt, a.heldout, a.layout, blocks_per_month=a.blocks_per_month, seeds=a.seeds,
-             out=Path(a.out), device=a.device, num_steps=a.steps)
+             out=Path(a.out), device=a.device, num_steps=a.steps, slow_from=a.slow_from)
 
 
 if __name__ == "__main__":
