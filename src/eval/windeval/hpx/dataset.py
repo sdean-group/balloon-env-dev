@@ -150,12 +150,15 @@ class HpxCoarseBlocks(Dataset):
             lon, lat = hp.pix2ang(nside, np.arange(npix), nest=True, lonlat=True)
             trop = np.abs(lat) < 10.0
             u_trop = self.uv[:, 0, trop].astype(np.float32).mean(axis=1)             # (T,)
-            self._slow = np.full(self.T, np.nan, dtype=np.float32)
-            for (a, b) in self.runs:                                                 # within runs only
-                cs = np.concatenate([[0.0], np.cumsum(u_trop[a:b], dtype=np.float64)])
-                L = self.lookback
-                for i in range(a + L, b):
-                    self._slow[i] = (cs[i - a] - cs[i - a - L]) / L
+            # causal mean over the previous `lookback` hours of CALENDAR time, tolerating the
+            # gaps (the excluded week each month means no contiguous run is 30 days long);
+            # present when at least half of the window's hours exist in the store
+            cs = np.concatenate([[0.0], np.cumsum(u_trop, dtype=np.float64)])
+            hi = np.arange(self.T)                                            # rows before i
+            lo = np.searchsorted(self.hours, self.hours - self.lookback, side="left")
+            n = hi - lo
+            mean = (cs[hi] - cs[lo]) / np.maximum(n, 1)
+            self._slow = np.where(n >= 0.5 * self.lookback, mean, np.nan).astype(np.float32)
             s = self._slow[~np.isnan(self._slow)]
             self.slow_mean, self.slow_std = float(s.mean()), float(s.std() + 1e-6)
 

@@ -161,7 +161,7 @@ def open_store(out: Path, T: int, *, fine: bool):
     root = zarr.open_group(str(out), mode="a")
     if "coarse" not in root:
         g = root.create_group("coarse")
-        g.create_array("uv", shape=(T, C, NPIX_COARSE), chunks=(24, C, NPIX_COARSE),
+        g.create_array("uv", shape=(T, C, NPIX_COARSE), chunks=(COARSE_CHUNK, C, NPIX_COARSE),
                        dtype="float32", fill_value=np.nan)
     if fine and "fine" not in root:
         g = root.create_group("fine")
@@ -194,60 +194,97 @@ def _worker_init(nside: int) -> None:
     _RG = Bilinear(nside)
 
 
+COARSE_CHUNK = 24     # hours per coarse chunk; also the unit of work (one writer per chunk)
+
+
 def _process(args) -> tuple[int, float]:
-    """Fetch, regrid, pool, and write one hour. Returns (index, seconds)."""
-    out, i, t, fine = args
+    """Fetch, regrid, pool, and write ONE coarse chunk (up to 24 hours). Returns (chunk, seconds).
+
+    Chunk-granular on purpose: zarr writes are read-modify-write at chunk level, so two
+    workers writing different rows of the same 24-hour coarse chunk race and one of them
+    silently overwrites the other with the fill value (bit us on 2026-09-05: 12-18% of rows
+    lost). Fine chunks are one hour each, so they never shared a writer anyway.
+    """
+    out, c, hours, fine = args
     import zarr
     t0 = time.time()
-    fields = fetch_hour(t)
-    hpx = _RG(fields)                                       # (36, NPIX_FINE) float32
     root = zarr.open_group(str(out), mode="r+")
-    root["coarse/uv"][i] = pool_nested(hpx)
-    if fine:
-        root["fine/uv"][i] = hpx.astype(np.float16)
-    return i, time.time() - t0
+    i0, i1 = c * COARSE_CHUNK, min((c + 1) * COARSE_CHUNK, len(hours))
+    coarse_rows = []
+    for i in range(i0, i1):
+        hpx = _RG(fetch_hour(int(hours[i])))                    # (36, NPIX_FINE) float32
+        coarse_rows.append(pool_nested(hpx))
+        if fine:
+            root["fine/uv"][i] = hpx.astype(np.float16)
+    root["coarse/uv"][i0:i1] = np.stack(coarse_rows)
+    return c, time.time() - t0
 
 
-def _done_mask(out: Path, T: int, fine: bool) -> np.ndarray:
-    """Which hours are already written (resume): a NaN-free coarse row means done."""
+def _repair_chunk(args) -> tuple[int, float]:
+    """Rebuild one coarse chunk from the fine store (exact nested pooling, no network)."""
+    out, c, T = args
+    import zarr
+    t0 = time.time()
+    root = zarr.open_group(str(out), mode="r+")
+    i0, i1 = c * COARSE_CHUNK, min((c + 1) * COARSE_CHUNK, T)
+    fine = root["fine/uv"][i0:i1].astype(np.float32)             # (n, 36, NPIX_FINE)
+    if np.isnan(fine).any():
+        raise RuntimeError(f"fine rows {i0}:{i1} contain NaN; cannot repair coarse from fine")
+    root["coarse/uv"][i0:i1] = np.stack([pool_nested(f) for f in fine])
+    return c, time.time() - t0
+
+
+def _chunk_done(out: Path, T: int, fine: bool) -> np.ndarray:
+    """Per coarse chunk: True iff every hour in it is fully written (resume / repair unit)."""
     import zarr
     root = zarr.open_group(str(out), mode="r")
     coarse = root["coarse/uv"]
-    done = np.zeros(T, dtype=bool)
-    for a in range(0, T, 24):
-        block = coarse[a:a + 24, 0, :8]
-        done[a:a + 24][:block.shape[0]] = ~np.isnan(block).any(axis=1)
-    if fine:
-        # fine chunks are files; a written coarse row without its fine chunk is a torn hour
-        f = root["fine/uv"]
-        for i in np.where(done)[0]:
-            if np.isnan(f[i, 0, :8]).any():
-                done[i] = False
+    n_chunks = (T + COARSE_CHUNK - 1) // COARSE_CHUNK
+    done = np.zeros(n_chunks, dtype=bool)
+    for c in range(n_chunks):
+        i0, i1 = c * COARSE_CHUNK, min((c + 1) * COARSE_CHUNK, T)
+        ok = not np.isnan(coarse[i0:i1, 0, :8]).any()
+        if ok and fine:
+            f = root["fine/uv"]
+            ok = not any(np.isnan(f[i, 0, :8]).any() for i in range(i0, i1))
+        done[c] = ok
     return done
 
 
-def ingest(out: Path, years: list[int], *, workers: int, fine: bool, limit: int | None) -> None:
+def ingest(out: Path, years: list[int], *, workers: int, fine: bool, limit: int | None,
+           repair_coarse_from_fine: bool = False) -> None:
     hours = training_hours(years)
     if limit:
         hours = hours[:limit]
     T = len(hours)
     root = open_store(out, T, fine=fine)
+    if root["coarse/uv"].chunks[0] != COARSE_CHUNK:
+        raise RuntimeError(f"store coarse chunk is {root['coarse/uv'].chunks[0]} h, expected {COARSE_CHUNK}")
     _write_attrs(root, hours, years)
-    done = _done_mask(out, T, fine)
-    todo = [(out, int(i), int(t), fine) for i, t in enumerate(hours) if not done[i]]
-    print(f"[ingest] {T} hours over {years}; {int(done.sum())} done, {len(todo)} to do; "
-          f"fine={'yes' if fine else 'no'}; {workers} workers -> {out}", flush=True)
+    done = _chunk_done(out, T, fine=fine and not repair_coarse_from_fine)
+    n_chunks = len(done)
+    if repair_coarse_from_fine:
+        todo = [(out, int(c), T) for c in range(n_chunks) if not done[c]]
+        fn, what = _repair_chunk, "repair coarse from fine"
+    else:
+        todo = [(out, int(c), hours, fine) for c in range(n_chunks) if not done[c]]
+        fn, what = _process, "fetch"
+    print(f"[ingest] {T} hours over {years} in {n_chunks} chunks of {COARSE_CHUNK} h; "
+          f"{int(done.sum())} done, {len(todo)} to {what}; fine={'yes' if fine else 'no'}; "
+          f"{workers} workers -> {out}", flush=True)
     t0 = time.time()
     n = 0
     with Pool(workers, initializer=_worker_init, initargs=(NSIDE_FINE,)) as pool:
-        for i, sec in pool.imap_unordered(_process, todo, chunksize=1):
+        for c, sec in pool.imap_unordered(fn, todo, chunksize=1):
             n += 1
-            if n % 50 == 0 or n == len(todo):
+            if n % 10 == 0 or n == len(todo):
                 rate = n / (time.time() - t0)
-                print(f"[ingest] {n}/{len(todo)} hours  {rate * 3600:.0f} h/h  "
-                      f"last {sec:.1f}s  eta {(len(todo) - n) / max(rate, 1e-9) / 3600:.1f} h",
-                      flush=True)
-    print(f"[ingest] done in {(time.time() - t0) / 3600:.2f} h", flush=True)
+                print(f"[ingest] {n}/{len(todo)} chunks  {rate * 3600 * COARSE_CHUNK:.0f} h/h  "
+                      f"last {sec:.1f}s  eta {(len(todo) - n) / max(rate, 1e-9) / 3600:.2f} h", flush=True)
+    bad = int((~_chunk_done(out, T, fine=fine and not repair_coarse_from_fine)).sum())
+    print(f"[ingest] done in {(time.time() - t0) / 3600:.2f} h; chunks still incomplete: {bad}", flush=True)
+    if bad:
+        raise SystemExit(1)
 
 
 # --------------------------------------------------------------------------- self-test
@@ -290,13 +327,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-fine", action="store_true", help="coarse store only")
     ap.add_argument("--limit", type=int, default=None, help="first N hours only (testing)")
     ap.add_argument("--check", metavar="ISO_TIME", help="regrid self-test on one hour and exit")
+    ap.add_argument("--repair-coarse-from-fine", action="store_true",
+                    help="rebuild incomplete coarse chunks by pooling the fine store (no network)")
     a = ap.parse_args(argv)
     if a.check:
         check(a.check)
         return
     if a.out is None:
         ap.error("--out is required")
-    ingest(a.out, a.years, workers=a.workers, fine=not a.no_fine, limit=a.limit)
+    ingest(a.out, a.years, workers=a.workers, fine=not a.no_fine, limit=a.limit,
+           repair_coarse_from_fine=a.repair_coarse_from_fine)
 
 
 if __name__ == "__main__":
