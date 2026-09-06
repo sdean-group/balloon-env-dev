@@ -96,6 +96,9 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, see
             gen[s].append(sampler.sample_block(hs, seed=1000 * s + h0 % 997))
     print(f"[eval] sampled in {time.time() - t0:.0f}s", flush=True)
     era = np.stack(era)                                                          # (B, τ, C, npix)
+    if np.isnan(era).any():
+        raise RuntimeError(f"held-out store {heldout} has NaN rows for the requested hours: "
+                           "finish (or repair) the reference ingest before scoring")
     gen = {s: np.stack(v) for s, v in gen.items()}
     g0 = gen[0]
     res = {"ckpt": str(ckpt), "step": sampler.step, "blocks": len(starts), "seeds": seeds}
