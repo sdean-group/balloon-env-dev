@@ -59,13 +59,19 @@ def hour_index(t: dt.datetime) -> int:
     return int((t - EPOCH).total_seconds() // 3600)
 
 
-def training_hours(years: list[int]) -> np.ndarray:
-    """Hourly timestamps (as ARCO hour indices) for the given years, days 8-14 excluded."""
+def training_hours(years: list[int], *, heldout: bool = False,
+                   months: tuple[int, ...] | None = None) -> np.ndarray:
+    """Hourly ARCO hour indices for the given years.
+
+    Default: every day except 8-14 (training). ``heldout=True``: ONLY days 8-14, optionally
+    restricted to ``months`` (the benchmark reference is days 8-14 of Jan/Apr/Jul/Oct).
+    """
     out = []
     for y in years:
         d = dt.datetime(y, 1, 1)
         while d.year == y:
-            if d.day not in EXCLUDED_DAYS:
+            keep = (d.day in EXCLUDED_DAYS) if heldout else (d.day not in EXCLUDED_DAYS)
+            if keep and (months is None or d.month in months):
                 base = hour_index(d)
                 out.extend(range(base, base + 24))
             d += dt.timedelta(days=1)
@@ -170,9 +176,11 @@ def open_store(out: Path, T: int, *, fine: bool):
     return root
 
 
-def _write_attrs(root, hours: np.ndarray, years: list[int]) -> None:
+def _write_attrs(root, hours: np.ndarray, years: list[int], *, heldout: bool = False,
+                 months: tuple[int, ...] | None = None) -> None:
     import zarr  # noqa: F401
     root.attrs.update({
+        "heldout": bool(heldout), "months": list(months) if months else None,
         "source": ARCO, "levels": LEVELS.tolist(), "channels": "interleaved (u_l, v_l) over levels",
         "order": "nest", "nside_fine": NSIDE_FINE, "nside_coarse": NSIDE_COARSE,
         "regrid": "bilinear from 0.25deg lat/lon to HEALPix pixel centres",
@@ -260,15 +268,16 @@ def _chunk_done(out: Path, T: int, fine: bool) -> np.ndarray:
 
 
 def ingest(out: Path, years: list[int], *, workers: int, fine: bool, limit: int | None,
-           repair_coarse_from_fine: bool = False) -> None:
-    hours = training_hours(years)
+           repair_coarse_from_fine: bool = False, heldout: bool = False,
+           months: tuple[int, ...] | None = None) -> None:
+    hours = training_hours(years, heldout=heldout, months=months)
     if limit:
         hours = hours[:limit]
     T = len(hours)
     root = open_store(out, T, fine=fine)
     if root["coarse/uv"].chunks[0] != COARSE_CHUNK:
         raise RuntimeError(f"store coarse chunk is {root['coarse/uv'].chunks[0]} h, expected {COARSE_CHUNK}")
-    _write_attrs(root, hours, years)
+    _write_attrs(root, hours, years, heldout=heldout, months=months)
     done = _chunk_done(out, T, fine=fine and not repair_coarse_from_fine)
     n_chunks = len(done)
     if repair_coarse_from_fine:
@@ -335,6 +344,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-fine", action="store_true", help="coarse store only")
     ap.add_argument("--limit", type=int, default=None, help="first N hours only (testing)")
     ap.add_argument("--check", metavar="ISO_TIME", help="regrid self-test on one hour and exit")
+    ap.add_argument("--heldout", action="store_true",
+                    help="ingest ONLY days 8-14 (the benchmark reference), not the training days")
+    ap.add_argument("--months", type=int, nargs="*", default=None,
+                    help="restrict to these months (e.g. 1 4 7 10 for the benchmark reference)")
     ap.add_argument("--repair-coarse-from-fine", action="store_true",
                     help="rebuild incomplete coarse chunks by pooling the fine store (no network)")
     a = ap.parse_args(argv)
@@ -344,7 +357,8 @@ def main(argv: list[str] | None = None) -> None:
     if a.out is None:
         ap.error("--out is required")
     ingest(a.out, a.years, workers=a.workers, fine=not a.no_fine, limit=a.limit,
-           repair_coarse_from_fine=a.repair_coarse_from_fine)
+           repair_coarse_from_fine=a.repair_coarse_from_fine, heldout=a.heldout,
+           months=tuple(a.months) if a.months else None)
 
 
 if __name__ == "__main__":
