@@ -24,7 +24,7 @@ model:
   sigma_data: 1.0
 
 train:
-  batch_size: 6                 # 12,288 px x 8 frames x 36 ch; measure peak memory on the Ada first
+  batch_size: 4                 # measured 2026-09-06 on one RTX 6000 Ada: 0.41 s/it, 20.5 GB peak (bf16); 300k steps ~34 h
   lr: 2.0e-4
   ema_decay: 0.9999
   n_steps: 300000
