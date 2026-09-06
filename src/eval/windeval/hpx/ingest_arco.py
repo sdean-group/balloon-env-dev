@@ -198,25 +198,33 @@ COARSE_CHUNK = 24     # hours per coarse chunk; also the unit of work (one write
 
 
 def _process(args) -> tuple[int, float]:
-    """Fetch, regrid, pool, and write ONE coarse chunk (up to 24 hours). Returns (chunk, seconds).
+    """Complete ONE coarse chunk (up to 24 hours): fetch only the hours still missing,
+    regrid, pool, and write the chunk once. Returns (chunk, seconds).
 
     Chunk-granular on purpose: zarr writes are read-modify-write at chunk level, so two
     workers writing different rows of the same 24-hour coarse chunk race and one of them
     silently overwrites the other with the fill value (bit us on 2026-09-05: 12-18% of rows
-    lost). Fine chunks are one hour each, so they never shared a writer anyway.
+    lost). Fine chunks are one hour each, so they never shared a writer anyway. Rows that
+    are already present in the chunk are kept, so a resume/repair costs only the missing
+    hours' transfer.
     """
     out, c, hours, fine = args
     import zarr
     t0 = time.time()
     root = zarr.open_group(str(out), mode="r+")
     i0, i1 = c * COARSE_CHUNK, min((c + 1) * COARSE_CHUNK, len(hours))
-    coarse_rows = []
-    for i in range(i0, i1):
+    block = np.array(root["coarse/uv"][i0:i1])                   # (n, C, NPIX_COARSE)
+    missing = np.isnan(block[:, 0, :8]).any(axis=1)
+    if fine:
+        f = root["fine/uv"]
+        missing |= np.array([np.isnan(f[i, 0, :8]).any() for i in range(i0, i1)])
+    for k in np.where(missing)[0]:
+        i = i0 + int(k)
         hpx = _RG(fetch_hour(int(hours[i])))                    # (36, NPIX_FINE) float32
-        coarse_rows.append(pool_nested(hpx))
+        block[k] = pool_nested(hpx)
         if fine:
             root["fine/uv"][i] = hpx.astype(np.float16)
-    root["coarse/uv"][i0:i1] = np.stack(coarse_rows)
+    root["coarse/uv"][i0:i1] = block
     return c, time.time() - t0
 
 
