@@ -25,10 +25,15 @@ def nest_to_xy_perm(nside: int) -> np.ndarray:
     """Permutation NEST -> HEALPIX_PAD_XY for ``12*nside**2`` pixels (needs earth2grid)."""
     import torch
     from earth2grid import healpix
-    idx = torch.arange(12 * nside * nside, dtype=torch.int64)
     # reorder(x, src, dest): data given in src order returned in dest order. With identity
-    # data in NEST order, out[k] is the NEST index of the k-th XY pixel.
-    return healpix.reorder(idx, healpix.NEST, healpix.HEALPIX_PAD_XY).numpy()
+    # data in NEST order, out[k] is the NEST index of the k-th XY pixel. Values are exact in
+    # float64 up to 2**53, far beyond any nside we use.
+    idx = torch.arange(12 * nside * nside, dtype=torch.float64)
+    out = healpix.reorder(idx, healpix.PixelOrder.NEST, healpix.HEALPIX_PAD_XY)
+    perm = out.round().to(torch.int64).numpy()
+    if sorted(perm.tolist()) != list(range(12 * nside * nside)):
+        raise RuntimeError("reorder did not return a permutation")
+    return perm
 
 
 def face_latlon(nside: int, perm: np.ndarray) -> np.ndarray:
