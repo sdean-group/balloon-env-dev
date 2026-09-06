@@ -168,10 +168,12 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, see
     # --- dispersion: seed spread vs ERA5 day-to-day spread at the same hour of day
     if seeds >= 2:
         seed_rms = float(np.sqrt(((gen[0] - gen[1]) ** 2).mean()))
-        # ERA5 at the same hours one day later (or earlier) inside the held-out week
+        # ERA5 at the same hours on the FARTHEST available day of the held-out week: 24 h apart
+        # the atmosphere is still ~45% correlated (e-fold ~30 h), which understates the spread
+        # of independent draws by ~25%; 5-6 days apart it is essentially independent.
         diffs = []
         for b, h0 in enumerate(starts):
-            for off in (24, -24):
+            for off in (144, -144, 120, -120, 96, -96, 72, -72, 48, -48, 24, -24):
                 hs2 = h0 + off + stride * np.arange(tau)
                 if all(int(h) in hour_to_row for h in hs2):
                     other = np.stack([ref[hour_to_row[int(h)]] for h in hs2])
