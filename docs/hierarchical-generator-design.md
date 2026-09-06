@@ -515,3 +515,30 @@ scale than ours.
 Decisions this revises: D1 (data pipeline emits HEALPix faces), D2 (operator = nested
 average, no MARS ambiguity), D3 (this section), D5 (per-face conv + `pad`, whole-sphere
 Stage 1), D8 (window indexing on faces), D9 (add vertex seam check, spherical spectra).
+
+---
+
+## 9. Stage 2 register (fine patch model on nside 256) — opened 2026-09-07, all rows open
+
+Stage 1 (whole-sphere nside 32, 8 × 6 h blocks) is training. Stage 2 turns a coarse block
+into hourly 0.23° detail inside patches on the 12 faces. Inherited and not reopened: the
+residual target `(x − U(c)) / scale` with a measured scale, the exact block-mean projection,
+coarse dropout + flag for classifier-free guidance, EDM objective and sampler. Decisions:
+
+| ID | Decision | Options | What settles it | Lean |
+|---|---|---|---|---|
+| S1 | Patch size on the face grid | 64² (8×8 coarse cells, the summer crop), 128² (cBottle's SR patch, 16×16 cells) | Throughput at τ=4 (bench like Stage 1); how much context the residual needs — the summer residual is small-scale (2.6% of variance), so 64² likely suffices | 64² first; 128² as ablation |
+| S2 | Block length τ and cadence | 4 h hourly (summer), 6 h hourly, 12 h hourly | Fine-scale temporal decorrelation is ~hours; the coarse conditioner (6-hourly, interpolated) carries the slow part; VRAM | 4 hourly (unchanged) |
+| S3 | Coarse conditioner in time | Linear interpolation of the 6-hourly coarse block to the hourly fine frames (train on interpolated true block means so inference matches) vs nearest | Interpolation error vs residual scale (measure on the stores) | linear, trained-in |
+| S4 | Conditioner-noise augmentation (Ho et al.) | none / Gaussian in normalised units with level embedding / structured (spectral) noise | E2-style test: Stage 1 samples fed to a Stage 2 trained without augmentation; the measured Stage 1 error spectrum sets the level | Gaussian with embedded level, calibrated to Stage 1's gate error |
+| S5 | Coordinates in Stage 2 | keep (lat/90, sin lon, cos lon) per pixel vs location-agnostic (the coarse crop carries "where") | Held-out-face generalisation test | keep for v1; agnostic as ablation |
+| S6 | Patch sampling | uniform over faces and hours vs land/lat-weighted | Nothing physical argues for weighting; the balloon band is global | uniform |
+| S7 | Face-edge handling at inference | patches cut from the padded 12-face image (cBottle), zero blend weight on any fabricated quadrant at the 8 three-face vertices | Seam metric at edges and vertices | as stated |
+| S8 | Seed-consistent tiling in space and time | overlapping patches with linear taper, per-patch seeds hashed from (seed, face, i, j, t); Stage 1 blocks tiled in time with 50% overlap | Determinism/order-independence tests (as the summer wrappers) | as stated |
+
+Compute expectation: patches of 64² × 4 frames × 36 ch with the summer U-Net were 2.7 it/s
+at batch 16 on an A100 MIG slice; the Ada should be similar or better. Data: 2 years of
+hourly global fine faces = 13.5k × 12 × 16 = 2.6M distinct 64² patches.
+
+Order: S3 and S4 need a measurement each (interpolation error; Stage 1 error spectrum from
+the gate); S1/S2/S5–S8 can be locked by discussion.
