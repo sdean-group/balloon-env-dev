@@ -283,9 +283,9 @@ def train(cfg: Config) -> Path:
                 best_val = v; checkpoint(out / "best.pt", step); print(f"[train] new best @ {step}")
         if step % cfg.ckpt_every == 0:
             checkpoint(latest, step)
-            if step % (cfg.snapshot_every or cfg.ckpt_every) == 0:
-                checkpoint(out / f"step_{step}.pt", step)
             print(f"[train] checkpoint @ {step}")
+        if step % (cfg.snapshot_every or cfg.ckpt_every) == 0:      # independent of ckpt_every
+            checkpoint(out / f"step_{step}.pt", step)
         if _STOP_REQUESTED:
             break
     checkpoint(latest, step)
