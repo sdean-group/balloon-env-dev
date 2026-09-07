@@ -83,10 +83,11 @@ def _slow_series(stores: list[str], nside: int) -> tuple[np.ndarray, np.ndarray]
 
 
 def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, seeds: int,
-             out: Path, device: str = "cuda", num_steps: int = 18, slow_from: list[str] | None = None) -> dict:
+             out: Path, device: str = "cuda", num_steps: int = 18, slow_from: list[str] | None = None,
+             s_churn: float = 0.0) -> dict:
     import healpy as hp
     import zarr
-    sampler = HpxSampler(ckpt, layout, num_steps=num_steps, device=device)
+    sampler = HpxSampler(ckpt, layout, num_steps=num_steps, device=device, s_churn=s_churn)
     tau, stride, nside, C = sampler.tau, sampler.stride_hours, sampler.nside, sampler.C
     root = zarr.open_group(heldout, mode="r")
     ref, hours = root["coarse/uv"], np.asarray(root["time"][:], dtype=np.int64)
@@ -189,6 +190,7 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, see
         return float((num / den).mean())
     res["adjacent_frame_corr_era5"], res["adjacent_frame_corr_model"] = adj_corr(era), adj_corr(g0)
 
+    res["num_steps"], res["s_churn"] = int(num_steps), float(s_churn)
     out.mkdir(parents=True, exist_ok=True)
     (out / "metrics.json").write_text(json.dumps(res, indent=1))
     np.savez_compressed(out / "samples.npz", starts=np.asarray(starts), gen0=g0[:, :, :, ::64].astype(np.float32),
@@ -205,11 +207,12 @@ def main(argv=None) -> None:
     ap.add_argument("--blocks-per-month", type=int, default=6); ap.add_argument("--seeds", type=int, default=2)
     ap.add_argument("--steps", type=int, default=18); ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--churn", type=float, default=0.0, help="EDM S_churn (0 = deterministic Heun ODE)")
     ap.add_argument("--slow-from", nargs="*", default=["/scratch/sps252/era5_hpx", "~/data/era5_hpx_coarse_2020_2021"],
                     help="training coarse stores used to compute the slow-state index before each block")
     a = ap.parse_args(argv)
     evaluate(a.ckpt, a.heldout, a.layout, blocks_per_month=a.blocks_per_month, seeds=a.seeds,
-             out=Path(a.out), device=a.device, num_steps=a.steps, slow_from=a.slow_from)
+             out=Path(a.out), device=a.device, num_steps=a.steps, slow_from=a.slow_from, s_churn=a.churn)
 
 
 if __name__ == "__main__":

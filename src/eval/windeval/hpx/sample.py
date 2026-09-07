@@ -1,8 +1,11 @@
 """Sampling from a Stage 1 checkpoint: whole-sphere coarse wind blocks in m/s, NEST order.
 
-Deterministic EDM Heun ODE (18 steps by default), exposed as ``heun_segment(start, end)`` so
-that a later time-tiling wrapper can split the trajectory the way the regional 4-D wrapper
-does. One block = ``n_frames`` global frames at ``stride_hours`` spacing.
+EDM Heun sampler (18 steps by default), deterministic unless ``s_churn > 0`` (Karras et al.
+2022 Alg. 2 stochasticity: at each step with s_min <= sigma <= s_max the state is re-noised to
+sigma*(1+gamma), gamma = min(s_churn/N, sqrt(2)-1), with noise scaled by s_noise). Exposed as
+``heun_segment(start, end)`` so that a later time-tiling wrapper can split the trajectory the
+way the regional 4-D wrapper does. One block = ``n_frames`` global frames at ``stride_hours``
+spacing.
 """
 from __future__ import annotations
 
@@ -27,8 +30,10 @@ def edm_sigma_schedule(n: int, sigma_min: float, sigma_max: float, rho: float = 
 
 class HpxSampler:
     def __init__(self, ckpt_path: str | Path, layout_dir: str | Path, *, num_steps: int = 18,
-                 device: str = "cpu", use_ema: bool = True) -> None:
+                 device: str = "cpu", use_ema: bool = True, s_churn: float = 0.0, s_min: float = 0.05,
+                 s_max: float = 50.0, s_noise: float = 1.003) -> None:
         self.device = torch.device(device)
+        self.s_churn, self.s_min, self.s_max, self.s_noise = float(s_churn), float(s_min), float(s_max), float(s_noise)
         ck = torch.load(Path(ckpt_path), map_location=self.device, weights_only=False)
         cfg = ck["cfg"]
         self.cfg, self.tau, self.nside = cfg, int(cfg["n_frames"]), int(ck["nside"])
@@ -57,7 +62,8 @@ class HpxSampler:
 
     @torch.no_grad()
     def heun_segment(self, x: torch.Tensor, *, start_step: int, end_step: int, unit_noise: bool,
-                     tfeat: torch.Tensor, slow: torch.Tensor) -> torch.Tensor:
+                     tfeat: torch.Tensor, slow: torch.Tensor, gen: torch.Generator | None = None) -> torch.Tensor:
+        """``gen`` (CPU or device generator) supplies the churn noise so stochastic samples are reproducible."""
         sig = edm_sigma_schedule(self.num_steps, self.sigma_min, self.sigma_max, device=x.device, dtype=x.dtype)
         if unit_noise:
             x = x * sig[0]
@@ -65,6 +71,13 @@ class HpxSampler:
         cond = self.coords.expand(B, -1, -1, -1, -1)
         for i in range(start_step, end_step):
             s_cur, s_next = sig[i], sig[i + 1]
+            if self.s_churn > 0 and self.s_min <= float(s_cur) <= self.s_max:
+                gamma = min(self.s_churn / self.num_steps, 2 ** 0.5 - 1)
+                s_hat = s_cur * (1 + gamma)
+                eps = (torch.randn_like(x) if gen is None else
+                       torch.randn(x.shape, generator=gen, device=gen.device, dtype=x.dtype).to(x.device))
+                x = x + (s_hat ** 2 - s_cur ** 2).sqrt() * self.s_noise * eps
+                s_cur = s_hat
             d = (x - self.model(x, s_cur.expand(B), cond, tfeat, slow)) / s_cur
             x_next = x + (s_next - s_cur) * d
             if s_next > 0:
@@ -79,6 +92,6 @@ class HpxSampler:
         tfeat, slow = self.conditioning(hours, slow_value)
         g = torch.Generator(device="cpu").manual_seed(int(seed))
         z = torch.randn(1, self.tau, self.C, 12, self.nside, self.nside, generator=g).to(self.device)
-        x = self.heun_segment(z, start_step=0, end_step=self.num_steps, unit_noise=True, tfeat=tfeat, slow=slow)[0]
+        x = self.heun_segment(z, start_step=0, end_step=self.num_steps, unit_noise=True, tfeat=tfeat, slow=slow, gen=g)[0]
         x = self.layout.from_faces(x)                                    # (τ, C, npix) normalised
         return (x * self.std + self.mean).cpu().numpy()
