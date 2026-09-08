@@ -86,6 +86,13 @@ training run and keep them fixed across rungs.
   (QBO / previous-month zonal wind), since cyclic time harmonics cannot carry interannual
   stratospheric modes.**
 
+- **2026-09-08, step 2 half done.** Data path built (ARCO -> HEALPix nside 256/32 stores,
+  2020-2023, held-out weeks of 2023). Stage 1 (whole-sphere coarse generator) trained and
+  passed its gate; it needed a wider training noise range than EDM's default to use its
+  conditioning at all (hub LOG 2026-09-07/08, register section 10). Stage 2 (patch model with
+  the time axis), the time-tiling wrapper, and the benchmark rows on the new grid are the
+  remaining parts of step 2. One-page status: hub `DECISIONS.md`.
+
 ## Steps in order
 
 1. **Run cBottle** (pretrained) on Kahan: install `earth2grid` + cBottle, run the coarse
