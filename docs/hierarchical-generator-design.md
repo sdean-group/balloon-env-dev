@@ -542,3 +542,41 @@ hourly global fine faces = 13.5k × 12 × 16 = 2.6M distinct 64² patches.
 
 Order: S3 and S4 need a measurement each (interpolation error; Stage 1 error spectrum from
 the gate); S1/S2/S5–S8 can be locked by discussion.
+
+### 9.1 What cBottle's super-resolution code fixes, and what it cannot (2026-09-07)
+
+Read from the installed `cbottle` package (`patchify.py`, `training/super_resolution.py`,
+`inference/__init__.py`), not the paper:
+
+| ID | cBottle | taken as |
+|---|---|---|
+| S1 | 128 px patches, 32 px overlap (stride 96) at inference; training patches on a half-patch stride from the padded faces | 64 px: cBottle's ratio is 16 fine px per coarse cell, so its patch spans 8x8 coarse cells; at our ratio of 8 that footprint is 64 px (the summer crop). 128 px = same pixel count, 16x16 cells, is the ablation |
+| S2 | none: SR is per frame (`time_length` folded into the batch, no temporal layers); fine detail in consecutive frames comes from independent noise | ours: 4 hourly frames per block with temporal convolutions (summer design). A balloon integrates the fine-scale wind through time; per-frame independence is wrong for us |
+| S3 | none in time. In space: exact 4:1 block-mean pooling of the truth, then bilinear regrid onto the fine grid, trained on exactly what inference sees | linear interpolation in time of the 6-hourly coarse block, trained in |
+| S4 | none: `augment_labels=None`; the hook (`map_augment`) exists unused | none first (E2-style test of Stage 1 samples into Stage 2 decides whether to add it) |
+| S5 | learned 20-channel positional embedding over the whole sphere (a parameter), sliced per patch, plus a global 128x128 lat-lon image of the coarse field as extra channels | fixed (lat/90, sin lon, cos lon): the learned embedding mostly encodes surface/terrain, absent in our band, and would be 16M parameters at nside 256; no global-context image in v1 |
+| S6 | every position on a half-patch stride, all faces, shuffled | same |
+| S7 | `healpix.pad` halo, unfold, denoise, fold with a Kaiser-Bessel-derived window, divide by summed weights, crop the padding; nothing special at the three-face vertices | same (the fabricated corners lie in the cropped padding) |
+| S8 | in space: true MultiDiffusion, one global latent, patches fused at every sampler step. In time: autoregression on the coarse model | space as cBottle; time by seed-consistent tiling (InfiniteDiffusion), the project premise |
+
+Also inherited from the summer and kept, though cBottle predicts the full fine field with no
+residual and no projection: residual target and exact block-mean projection, because the
+projection is what makes a Stage 2 sample's coarse content equal the Stage 1 sample.
+
+## 10. Training noise-level distribution (Stage 1 outcome, 2026-09-07/08) - applies to Stage 2
+
+The 300k Stage 1 model trained with EDM's log-normal sigma (P_mean -1.2, P_std 1.2) ignored its
+calendar conditioning and sampled the annual-mean climatology, with weak jets, a third of the
+small-scale power missing, and under-dispersion. Diagnosis (LOG 2026-09-07): the log-normal puts
+~1e-4 of draws above sigma 30, while hemisphere-scale modes of a global field have per-mode SNR
+~ amplitude x sqrt(npix) and are only noise-dominated near sigma 100+; the denoiser was never
+trained where sampling starts, so the first ODE steps lock in the mean state. Continuing the
+model for 10k steps with a log-uniform sigma on [0.02, 1000] (cBottle's loss option) removed all
+four symptoms at once with the deterministic sampler.
+
+Decision: **D-sigma** - every model in this project trains with a noise-level distribution that
+reaches the noise level at which its largest coherent modes are noise-dominated. Stage 1: log-
+uniform to 1000. Stage 2 (residual patches, 64 px x 4 frames, residual amplitude small): the
+largest residual modes are patch-scale, amplitude ~0.2 std over ~16k px, so ~30 suffices; use
+log-uniform on [0.02, 200] for margin. Sampling starts at the training ceiling. Churn is a
+diagnostic, not a fix: with the right sigma range it over-disperses.
