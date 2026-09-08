@@ -9,7 +9,8 @@
 #SBATCH --output=logs/%x-%j.out
 # Stage 1 gate on every snapshot of a run (plus best.pt), same settings for all so the
 # numbers form a curve. RUN=<run dir> CKPTS="step_50000.pt ..." (default: all snapshots + best)
-# CHURNS="0 2 5 8" (EDM S_churn values; non-zero ones write to eval_<name>_churn<c>).
+# CHURNS="0 2 5 8" (EDM S_churn values; non-zero ones write to eval_<name>_churn<c>). SUFFIX tags the
+# out dir; extra args after the script (e.g. --sigma-max 200) are passed to eval_coarse.py.
 source ~/envs/cbottle/bin/activate
 cd ~/balloon-env-dev
 RUN=${RUN:-/scratch/sps252/runs/stage1_hpx32}
@@ -17,7 +18,7 @@ HELDOUT=${HELDOUT:-/scratch/sps252/era5_hpx_heldout_2023}
 SEEDS=${SEEDS:-2}; BPM=${BPM:-6}; STEPS=${STEPS:-18}; CHURNS=${CHURNS:-0}
 if [ -z "$CKPTS" ]; then CKPTS="$(cd $RUN && ls step_*.pt | sort -t_ -k2 -n) best.pt"; fi
 for ck in $CKPTS; do for churn in $CHURNS; do
-    name=${ck%.pt}; suffix=""; [ "$churn" != "0" ] && suffix="_churn$churn"; [ "$STEPS" != "18" ] && suffix="${suffix}_s$STEPS"
+    name=${ck%.pt}; suffix="$SUFFIX"; [ "$churn" != "0" ] && suffix="${suffix}_churn$churn"; [ "$STEPS" != "18" ] && suffix="${suffix}_s$STEPS"
     echo "################ gate: $name churn=$churn ################"
     python src/eval/windeval/hpx/eval_coarse.py --ckpt $RUN/$ck --heldout $HELDOUT --churn $churn \
         --blocks-per-month $BPM --seeds $SEEDS --steps $STEPS --device cuda --out $RUN/eval_$name$suffix "$@"
