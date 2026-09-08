@@ -360,7 +360,10 @@ class EDMPrecondSpaceTime(nn.Module):
     def loss(self, x0: torch.Tensor, *, cond: torch.Tensor | None = None,
              tfeat: torch.Tensor | None = None, coarse: torch.Tensor | None = None,
              P_mean: float = -1.2, P_std: float = 1.2,
-             coarse_dropout: float = 0.0) -> torch.Tensor:
+             coarse_dropout: float = 0.0, sigma_dist: str = "log_normal",
+             train_sigma_min: float = 0.02, train_sigma_max: float = 200.0) -> torch.Tensor:
+        """``sigma_dist``: 'log_normal' (EDM default, P_mean/P_std) or 'log_uniform' on
+        [train_sigma_min, train_sigma_max] -- see hpx/net.py (D-sigma) for why the latter."""
         B = x0.shape[0]
         mask = None
         if self.coarse_residual:
@@ -372,8 +375,14 @@ class EDMPrecondSpaceTime(nn.Module):
             keep = (torch.rand(B, device=x0.device) >= coarse_dropout).to(x0.dtype)
             coarse = coarse * keep.reshape(B, 1, 1, 1, 1)
             mask = keep
-        rnd = torch.randn(B, device=x0.device)
-        sigma = (rnd * P_std + P_mean).exp()
+        if sigma_dist == "log_normal":
+            rnd = torch.randn(B, device=x0.device)
+            sigma = (rnd * P_std + P_mean).exp()
+        elif sigma_dist == "log_uniform":
+            lo, hi = float(np.log(train_sigma_min)), float(np.log(train_sigma_max))
+            sigma = (lo + torch.rand(B, device=x0.device) * (hi - lo)).exp()
+        else:
+            raise ValueError(f"unknown sigma_dist {sigma_dist!r}")
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         n = torch.randn_like(x0) * sigma.reshape(-1, 1, 1, 1, 1)
         D = self(x0 + n, sigma, cond=cond, tfeat=tfeat, coarse=coarse, coarse_mask=mask)

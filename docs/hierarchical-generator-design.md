@@ -580,3 +580,24 @@ uniform to 1000. Stage 2 (residual patches, 64 px x 4 frames, residual amplitude
 largest residual modes are patch-scale, amplitude ~0.2 std over ~16k px, so ~30 suffices; use
 log-uniform on [0.02, 200] for margin. Sampling starts at the training ceiling. Churn is a
 diagnostic, not a fix: with the right sigma range it over-disperses.
+
+### 9.2 Stage 2 rows locked (2026-09-08, Shaurya)
+
+Measurements on the 2022-2023 stores (`unicorn/residual_timescales.py`, `bench_stage2_tau.py`):
+residual RMS 1.13 m/s = 1.1% of the fine field's variance; residual Eulerian autocorrelation
+0.91 / 0.64 / 0.45 / 0.35 at 1 / 3 / 6 / 12 h (the 0.35 floor is stationary structure);
+linear time interpolation of the 6-hourly coarse field errs by 1.14 m/s at the 3 h midpoint,
+i.e. as much as the whole residual; the summer space-time U-Net on 64x64 patches with 108
+conditioning channels runs at ~650 patch-frames/s on the Ada regardless of block length.
+
+| ID | locked | justification |
+|---|---|---|
+| S1 | 64 px patches, 32 px overlap | cBottle's 8x8-coarse-cell footprint at our ratio |
+| S2 | **13 hourly frames (hours 0-12), tiled with a 6 h stride** | the changing part of the residual is forgotten within ~6 h, so 12 h holds all jointly-modellable structure; blocks start and end on coarse frames and see three of them; 50% overlap comes free; 0.33 s/step at batch 16, so 200k steps in 18 h |
+| S3 | **both bracketing coarse frames as conditioning + the hour offset; residual measured against the linear interpolation; exact block-mean projection only at hours 0/6/12** | interpolation error equals the residual, so the in-between must be learned, not fixed |
+| S4 | no conditioner-noise augmentation (cBottle) | E2-style test decides later |
+| S5 | **fixed (lat/90, sin lon, cos lon) channels**; cBottle's learned per-pixel embedding = ablation 1, scored on the time-mean residual pattern | latitude sets the dynamics and the pixel geometry; a third of the residual is place-fixed and coordinates let the model learn that map |
+| S6 | uniform patch positions, all faces | cBottle |
+| S7 | padded-face patches, Kaiser-Bessel blend, cropped corners | cBottle |
+| S8 | MultiDiffusion in space (cBottle); seed-consistent tiling in time | project premise |
+| D-sigma | log-uniform sigma on [0.02, 200] | the interpolation-error component of the residual is patch-coherent (SNR ~ 64 at sigma 1) |
