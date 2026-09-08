@@ -20,6 +20,8 @@ The regional model (``spacetime.SpaceTimeUNet``) is a 2-D U-Net per frame plus a
 from __future__ import annotations
 
 import numpy as np
+import math
+
 import torch
 import torch.nn as nn
 
@@ -231,9 +233,25 @@ class EDMPrecondHpx(nn.Module):
         c_noise = sigma.flatten().log() / 4.0
         return c_skip * x + c_out * self.net(c_in * x, c_noise, cond, tfeat, slow)
 
-    def loss(self, x0, *, cond, tfeat, slow=None, P_mean: float = -1.2, P_std: float = 1.2):
+    def loss(self, x0, *, cond, tfeat, slow=None, P_mean: float = -1.2, P_std: float = 1.2,
+             sigma_dist: str = "log_normal", train_sigma_min: float = 0.02, train_sigma_max: float = 1000.0,
+             rho: float = 7.0):
+        """Noise-level distribution: EDM log-normal (default), or -- as in cBottle's loss -- log-uniform
+        or 'power' (uniform in sigma^(1/rho), the EDM schedule as a density) on [train_sigma_min,
+        train_sigma_max]. The log-normal puts ~1e-4 of draws above sigma 30, but hemisphere-scale
+        modes of a global field only become noise-dominated near sigma ~ amplitude * sqrt(npix) ~ 100+,
+        so a network trained with it never learns to use its conditioning where sampling starts."""
         B = x0.shape[0]
-        sigma = (torch.randn(B, device=x0.device) * P_std + P_mean).exp()
+        if sigma_dist == "log_normal":
+            sigma = (torch.randn(B, device=x0.device) * P_std + P_mean).exp()
+        elif sigma_dist == "log_uniform":
+            lo, hi = math.log(train_sigma_min), math.log(train_sigma_max)
+            sigma = (lo + torch.rand(B, device=x0.device) * (hi - lo)).exp()
+        elif sigma_dist == "power":
+            lo, hi = train_sigma_min ** (1 / rho), train_sigma_max ** (1 / rho)
+            sigma = (lo + torch.rand(B, device=x0.device) * (hi - lo)) ** rho
+        else:
+            raise ValueError(f"unknown sigma_dist {sigma_dist!r}")
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         n = torch.randn_like(x0) * sigma.reshape(-1, 1, 1, 1, 1, 1)
         D = self(x0 + n, sigma, cond, tfeat, slow)

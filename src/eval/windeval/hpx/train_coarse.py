@@ -63,6 +63,15 @@ class Config:
     attn_resolutions: tuple = (8, 4)
     temporal_kernel: int = 3
     sigma_data: float = 1.0
+    sigma_max: float = 80.0              # the model's nominal top noise level (sampling schedule start)
+    # training noise-level distribution: EDM log-normal(P_mean, P_std), or log_uniform / power on
+    # [train_sigma_min, train_sigma_max] (see EDMPrecondHpx.loss for why a global field needs the latter)
+    sigma_dist: str = "log_normal"
+    P_mean: float = -1.2
+    P_std: float = 1.2
+    train_sigma_min: float = 0.02
+    train_sigma_max: float = 1000.0
+    init_from: str = ""                  # warm start: load model+EMA weights from this checkpoint (fresh optimizer, step 0)
 
     batch_size: int = 6
     lr: float = 2e-4
@@ -164,7 +173,7 @@ def init_wandb(cfg: Config, out: Path, resume_id: str | None):
 
 
 def build_model(cfg: Config, n_channels: int) -> EDMPrecondHpx:
-    return EDMPrecondHpx(n_channels, tau=cfg.n_frames, sigma_data=cfg.sigma_data,
+    return EDMPrecondHpx(n_channels, tau=cfg.n_frames, sigma_data=cfg.sigma_data, sigma_max=cfg.sigma_max,
                          net_kwargs=dict(model_channels=cfg.model_channels, channel_mult=cfg.channel_mult,
                                          num_res_blocks=cfg.num_res_blocks, attn_resolutions=cfg.attn_resolutions,
                                          temporal_kernel=cfg.temporal_kernel, slow_features=2))
@@ -182,10 +191,12 @@ def _split_runs(ds: HpxCoarseBlocks, fraction: float, seed: int) -> tuple[np.nda
     return ds.block_starts[~is_val], ds.block_starts[is_val]
 
 
-def _batch_loss(model, batch, device, amp: bool):
+def _batch_loss(model, batch, device, cfg: Config):
     x, cond, tfeat, slow = (t.to(device, non_blocking=True) for t in batch)
-    with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp and device.type == "cuda"):
-        return model.loss(x, cond=cond, tfeat=tfeat, slow=slow)
+    with torch.autocast(device.type, dtype=torch.bfloat16, enabled=cfg.amp and device.type == "cuda"):
+        return model.loss(x, cond=cond, tfeat=tfeat, slow=slow, P_mean=cfg.P_mean, P_std=cfg.P_std,
+                          sigma_dist=cfg.sigma_dist, train_sigma_min=cfg.train_sigma_min,
+                          train_sigma_max=cfg.train_sigma_max)
 
 
 @torch.no_grad()
@@ -196,7 +207,7 @@ def validation_loss(model, loader, cfg: Config, device) -> float:
     with torch.random.fork_rng(devices=devs):
         torch.manual_seed(cfg.seed + 10_000_019)
         for batch in loader:
-            losses.append(float(_batch_loss(model, batch, device, cfg.amp)))
+            losses.append(float(_batch_loss(model, batch, device, cfg)))
     model.train(was)
     return float(np.mean(losses))
 
@@ -246,6 +257,12 @@ def train(cfg: Config) -> Path:
     if ck is not None:
         model.load_state_dict(ck["model"]); ema.shadow.load_state_dict(ck["ema"]); opt.load_state_dict(ck["opt"])
         print(f"[train] resumed from {latest} at step {start_step} (data_seed={data_seed})")
+    elif cfg.init_from:
+        src = Path(cfg.init_from).expanduser()
+        ck0 = torch.load(src, map_location="cpu", weights_only=False)
+        model.load_state_dict(ck0["model"]); ema.shadow.load_state_dict(ck0["ema"])
+        print(f"[train] warm start: model+EMA weights from {src} (its step {ck0.get('step')}); optimizer fresh, step 0")
+        del ck0
     wb_run, wb_id = init_wandb(cfg, out, (ck or {}).get("wandb_id"))
     del ck
 
@@ -263,7 +280,7 @@ def train(cfg: Config) -> Path:
         for g in opt.param_groups:
             g["lr"] = lr
         opt.zero_grad(set_to_none=True)
-        loss = _batch_loss(model, batch, device, cfg.amp)
+        loss = _batch_loss(model, batch, device, cfg)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step(); ema.update(model)

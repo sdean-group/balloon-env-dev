@@ -1,0 +1,52 @@
+# Stage 1 fine-tune (2026-09-07): continue the 300k-step stage1_hpx32 model with a training
+# noise-level distribution that reaches sigma 1000. Diagnosis (LOG 2026-09-07): with EDM's
+# log-normal sigma the denoiser is never trained above sigma ~30, where hemisphere-scale modes
+# of the global field are still readable from the noisy input, so it learned to ignore the
+# calendar/QBO conditioning and the sampler (starting at sigma 80) locks in the annual-mean
+# climatology. Same data, same normalisation (stats copied from the parent run), fresh optimizer.
+data:
+  stores:
+    - /scratch/sps252/era5_hpx
+    - ~/data/era5_hpx_coarse_2020_2021
+  layout_dir: ~/data/hpx_layout
+  stats_path: /scratch/sps252/runs/stage1_hpx32/stats.npz
+  n_frames: 8
+  stride_hours: 6
+  slow_index: true
+  lookback_hours: 720
+  storage_dtype: float16
+  val_run_fraction: 0.04
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [8, 4]
+  temporal_kernel: 3
+  sigma_data: 1.0
+  sigma_max: 1000.0
+  sigma_dist: log_uniform
+  train_sigma_min: 0.02
+  train_sigma_max: 1000.0
+
+train:
+  init_from: /scratch/sps252/runs/stage1_hpx32/step_300000.pt
+  batch_size: 4
+  lr: 1.0e-4
+  ema_decay: 0.9999
+  n_steps: 60000
+  warmup_steps: 1000
+  num_workers: 4
+  amp: true
+  out_dir: /scratch/sps252/runs/stage1_hpx32_ft
+  ckpt_every: 2000
+  snapshot_every: 10000
+  log_every: 100
+  val_every: 2000
+  val_batches: 8
+  resume: true
+  device: cuda
+  seed: 1
+  wandb_project: balloon-hpx
+  wandb_mode: offline
+  wandb_run_name: stage1-hpx32-ft

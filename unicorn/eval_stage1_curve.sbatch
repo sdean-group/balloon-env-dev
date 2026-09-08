@@ -17,7 +17,7 @@ HELDOUT=${HELDOUT:-/scratch/sps252/era5_hpx_heldout_2023}
 SEEDS=${SEEDS:-2}; BPM=${BPM:-6}; STEPS=${STEPS:-18}; CHURNS=${CHURNS:-0}
 if [ -z "$CKPTS" ]; then CKPTS="$(cd $RUN && ls step_*.pt | sort -t_ -k2 -n) best.pt"; fi
 for ck in $CKPTS; do for churn in $CHURNS; do
-    name=${ck%.pt}; suffix=""; [ "$churn" != "0" ] && suffix="_churn$churn"
+    name=${ck%.pt}; suffix=""; [ "$churn" != "0" ] && suffix="_churn$churn"; [ "$STEPS" != "18" ] && suffix="${suffix}_s$STEPS"
     echo "################ gate: $name churn=$churn ################"
     python src/eval/windeval/hpx/eval_coarse.py --ckpt $RUN/$ck --heldout $HELDOUT --churn $churn \
         --blocks-per-month $BPM --seeds $SEEDS --steps $STEPS --device cuda --out $RUN/eval_$name$suffix "$@"

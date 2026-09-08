@@ -31,7 +31,8 @@ def edm_sigma_schedule(n: int, sigma_min: float, sigma_max: float, rho: float = 
 class HpxSampler:
     def __init__(self, ckpt_path: str | Path, layout_dir: str | Path, *, num_steps: int = 18,
                  device: str = "cpu", use_ema: bool = True, s_churn: float = 0.0, s_min: float = 0.05,
-                 s_max: float = 50.0, s_noise: float = 1.003) -> None:
+                 s_max: float = 50.0, s_noise: float = 1.003, sigma_max: float | None = None) -> None:
+        """``sigma_max`` overrides the checkpoint's starting noise level for the schedule."""
         self.device = torch.device(device)
         self.s_churn, self.s_min, self.s_max, self.s_noise = float(s_churn), float(s_min), float(s_max), float(s_noise)
         ck = torch.load(Path(ckpt_path), map_location=self.device, weights_only=False)
@@ -44,12 +45,13 @@ class HpxSampler:
         self.slow_mean, self.slow_std = ck.get("slow_norm", (0.0, 1.0))
         self.layout = FaceLayout.load(self.nside, layout_dir)
         self.coords = torch.from_numpy(coord_channels(self.nside, self.layout.perm))[None].to(self.device)
-        self.model = EDMPrecondHpx(self.C, tau=self.tau, sigma_data=cfg["sigma_data"],
+        self.model = EDMPrecondHpx(self.C, tau=self.tau, sigma_data=cfg["sigma_data"], sigma_max=float(cfg.get("sigma_max", 80.0)),
                                    net_kwargs=dict(model_channels=cfg["model_channels"], channel_mult=tuple(cfg["channel_mult"]),
                                                    num_res_blocks=cfg["num_res_blocks"], attn_resolutions=tuple(cfg["attn_resolutions"]),
                                                    temporal_kernel=cfg["temporal_kernel"], slow_features=2)).to(self.device)
         self.model.load_state_dict(ck["ema"] if use_ema else ck["model"]); self.model.eval()
-        self.num_steps, self.sigma_min, self.sigma_max = int(num_steps), self.model.sigma_min, self.model.sigma_max
+        self.num_steps, self.sigma_min = int(num_steps), self.model.sigma_min
+        self.sigma_max = float(sigma_max) if sigma_max else self.model.sigma_max
         self.step = int(ck.get("step", -1))
 
     def conditioning(self, hours: np.ndarray, slow_value: float | None = None):
