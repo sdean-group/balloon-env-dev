@@ -156,6 +156,11 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, out
                                         for a, b in ((10, 96), (96, 256), (256, 512), (512, lmax + 1))}
     res["spectrum_floor_by_band"] = {f"l{a}-{b}": float(np.abs(fl[:, a - 10:b - 10]).mean())
                                      for a, b in ((10, 96), (96, 256), (256, 512), (512, lmax + 1))}
+    # fraction of the field's variance at l >= 256 (scales < ~80 km): ERA5 has ~1e-6 there, so the log
+    # ratio of the top bands is a ratio of near-nothings; this row says whether the absolute level matters
+    ell = np.arange(lmax + 1); wl = 2 * ell + 1
+    res["variance_frac_l256plus_gen"] = float((wl[256:] * cl_g[:, 256:]).sum() / (wl[1:] * cl_g[:, 1:]).sum())
+    res["variance_frac_l256plus_era"] = float((wl[256:] * cl_e[:, 256:]).sum() / (wl[1:] * cl_e[:, 1:]).sum())
     res["residual_rms_gen"], res["residual_rms_era"] = float(np.mean(acc["res_rms_gen"])), float(np.mean(acc["res_rms_era"]))
     res["residual_autocorr_1_3_6h_gen"] = np.mean(acc["ac_gen"], axis=0).round(4).tolist()
     res["residual_autocorr_1_3_6h_era"] = np.mean(acc["ac_era"], axis=0).round(4).tolist()
