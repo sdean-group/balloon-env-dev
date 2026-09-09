@@ -1,0 +1,51 @@
+# Stage 2 - fine residual patch model on HEALPix nside 256 (0.23 deg), levels 49-66 (u,v).
+# Locked 2026-09-08 (register 9.1/9.2): 64 px coarse-aligned patches on the padded faces,
+# 13 hourly frames (hours 0-12) so a block starts and ends on 6-hourly coarse frames; the
+# conditioner is the two bracketing coarse frames plus their linear interpolation and the hour
+# offset, the target the residual against that interpolation; fixed lat/lon coordinates; EDM
+# with log-uniform sigma to 200 (D-sigma); coarse dropout 0.1 + flag for CFG (inherited).
+data:
+  store: /scratch/sps252/era5_hpx                 # fine + coarse groups, 2022-2023
+  layout_dir: ~/data/hpx_layout
+  stats_path: /scratch/sps252/runs/stage1_hpx32/stats.npz   # Stage 1's per-channel mean/std
+  n_frames: 13
+  coarse_stride: 6
+  patch: 64
+  pad: 32
+  patches_per_item: 16
+  lift: bilinear                 # smooth baseline/conditioner (2026-09-09: the nearest lift leaves a faint coarse-cell grid, LOG)
+  val_run_fraction: 0.04
+
+model:
+  model_channels: 128
+  channel_mult: [1, 2, 2]
+  num_res_blocks: 2
+  attn_resolutions: [4]
+  temporal_kernel: 3
+  sigma_data: 1.0
+  sigma_max: 200.0
+  sigma_dist: log_uniform
+  train_sigma_min: 0.02
+  train_sigma_max: 200.0
+  coarse_dropout: 0.1
+
+train:
+  runs_per_batch: 1               # batch = runs_per_batch x patches_per_item patches
+  lr: 2.0e-4
+  ema_decay: 0.9999
+  n_steps: 200000
+  warmup_steps: 1000
+  num_workers: 10
+  amp: true
+  out_dir: /scratch/sps252/runs/stage2_hpx256_bl
+  ckpt_every: 2000
+  snapshot_every: 25000
+  log_every: 100
+  val_every: 2000
+  val_batches: 8
+  resume: true
+  device: cuda
+  seed: 0
+  wandb_project: balloon-hpx
+  wandb_mode: offline
+  wandb_run_name: stage2-hpx256-bl

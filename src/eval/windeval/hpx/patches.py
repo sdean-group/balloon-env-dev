@@ -70,3 +70,31 @@ class PatchGeometry:
     def lift(self, c: np.ndarray) -> np.ndarray:
         """``(..., P/r, P/r)`` -> ``(..., P, P)`` nearest lift (exact inverse of block_mean on constants)."""
         return np.repeat(np.repeat(c, self.ratio, axis=-2), self.ratio, axis=-1)
+
+
+class SmoothLift:
+    """Bilinear interpolation of an nside_coarse field to the nside_fine pixel centres on the sphere
+    (healpy's 4-neighbour weights), as a gather: ``fine[p] = sum_k w[p, k] * coarse[idx[p, k]]``.
+    Used as the residual baseline and conditioner instead of the blocky nearest lift: a residual
+    that has to cancel a 1.5 m/s step at every coarse-cell edge leaves a faint 1.8-degree grid in
+    the output (LOG 2026-09-09); against a smooth baseline the residual is smooth and smaller.
+    Block-mean consistency is then restored by the exact nearest projection, not by the lift."""
+
+    def __init__(self, nside_fine: int, nside_coarse: int, cache_dir: str | Path = "~/data/hpx_layout") -> None:
+        cache_dir = Path(cache_dir).expanduser(); p = cache_dir / f"interp_{nside_coarse}_to_{nside_fine}.npz"
+        if p.exists():
+            z = np.load(p); self.idx, self.w = z["idx"], z["w"]
+        else:
+            import healpy as hp
+            theta, phi = hp.pix2ang(nside_fine, np.arange(12 * nside_fine * nside_fine), nest=True)
+            pix, wts = hp.get_interp_weights(nside_coarse, theta, phi, nest=True)      # (4, npix) each
+            self.idx, self.w = pix.T.astype(np.int64).copy(), wts.T.astype(np.float32).copy()
+            cache_dir.mkdir(parents=True, exist_ok=True); np.savez(p, idx=self.idx, w=self.w)
+
+    def gather(self, c: np.ndarray, fine_index: np.ndarray) -> np.ndarray:
+        """c ``(..., npix_c)``, fine_index ``(P, P)`` NEST -> ``(..., P, P)`` interpolated values."""
+        idx, w = self.idx[fine_index], self.w[fine_index]                                # (P, P, 4)
+        out = np.zeros(c.shape[:-1] + fine_index.shape, dtype=np.float32)
+        for k in range(4):
+            out += c[..., idx[..., k]] * w[..., k]
+        return out

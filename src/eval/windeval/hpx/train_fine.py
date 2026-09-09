@@ -61,6 +61,7 @@ class Config:
     patch: int = 64
     pad: int = 32
     patches_per_item: int = 16
+    lift: str = "nearest"                # residual baseline / conditioner lift: nearest (blocky) or bilinear (smooth)
     val_run_fraction: float = 0.04
 
     model_channels: int = 128
@@ -173,7 +174,7 @@ def train(cfg: Config) -> Path:
     starts = block_starts(cfg.store, cfg.n_frames)
     train_starts, val_starts = split_starts(starts, hours, cfg.val_run_fraction, cfg.seed)
     kw = dict(n_frames=cfg.n_frames, coarse_stride=cfg.coarse_stride, patch=cfg.patch, pad=cfg.pad,
-              patches_per_item=cfg.patches_per_item)
+              patches_per_item=cfg.patches_per_item, lift=cfg.lift)
     scale_file = out / "stage2_scale.npy"
     if scale_file.exists():
         scale = np.load(scale_file)
@@ -188,7 +189,7 @@ def train(cfg: Config) -> Path:
                          length=cfg.val_batches * cfg.runs_per_batch, seed=10_000 + cfg.seed, **kw)
     print(f"[train] data: {len(starts)} block starts ({len(train_starts)} train / {len(val_starts)} val); nside {ds.nside}/{ds.nside_c}, "
           f"{ds.C} channels; blocks τ={cfg.n_frames} h, coarse every {cfg.coarse_stride} h; {cfg.patch}px patches x {cfg.patches_per_item} per run; "
-          f"{ds.geom.n_positions()} patch positions")
+          f"{ds.geom.n_positions()} patch positions; lift {cfg.lift}")
     loader = DataLoader(ds, batch_size=cfg.runs_per_batch, shuffle=False, num_workers=cfg.num_workers, collate_fn=collate_runs,
                         pin_memory=True, persistent_workers=cfg.num_workers > 0, prefetch_factor=4 if cfg.num_workers > 0 else None)
     val_loader = DataLoader(val_ds, batch_size=cfg.runs_per_batch, shuffle=False, num_workers=min(2, cfg.num_workers),

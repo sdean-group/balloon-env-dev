@@ -23,7 +23,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 from dataset import time_features  # noqa: E402
 from layout import FaceLayout, coord_channels  # noqa: E402
-from patches import PatchGeometry  # noqa: E402
+from patches import PatchGeometry, SmoothLift  # noqa: E402
 from sample import edm_sigma_schedule  # noqa: E402
 from train_fine import build_model  # noqa: E402
 
@@ -81,6 +81,11 @@ class HpxFineSampler:
         win = kbd_window(P, window_beta)[None] * vmask                                     # (n, P, P)
         self.fidx = torch.from_numpy(fidx).to(self.device)
         self.cidx = self.fidx // (self.geom.ratio ** 2)
+        self.lift_mode = getattr(cfg, "lift", "nearest")
+        if self.lift_mode == "bilinear":
+            sm = SmoothLift(self.nside, self.nside_c, layout_dir)
+            self.sm_idx = torch.from_numpy(sm.idx).to(self.device)            # (npix, 4)
+            self.sm_w = torch.from_numpy(sm.w).to(self.device)                # (npix, 4)
         self.win = torch.from_numpy(win.astype(np.float32)).to(self.device)
         wsum = torch.zeros(12 * self.nside * self.nside, device=self.device)
         wsum.index_add_(0, self.fidx.flatten(), self.win.flatten())
@@ -95,8 +100,19 @@ class HpxFineSampler:
     def block_mean(self, x: torch.Tensor) -> torch.Tensor:          # (..., npix) -> (..., npix_c)
         return x.reshape(*x.shape[:-1], -1, self.geom.ratio ** 2).mean(-1)
 
-    def lift(self, c: torch.Tensor) -> torch.Tensor:                # (..., npix_c) -> (..., npix)
+    def lift(self, c: torch.Tensor) -> torch.Tensor:                # (..., npix_c) -> (..., npix), nearest (exact)
         return c.repeat_interleave(self.geom.ratio ** 2, dim=-1)
+
+    def lift_cond(self, c: torch.Tensor, fi: torch.Tensor | None = None) -> torch.Tensor:
+        """The lift the model was trained with, on the whole sphere (fi None) or gathered at fine
+        indices ``fi`` of any shape: ``(..., npix_c)`` -> ``(..., npix)`` or ``(..., *fi.shape)``."""
+        if self.lift_mode != "bilinear":
+            return self.lift(c) if fi is None else c[..., fi // (self.geom.ratio ** 2)]
+        idx = self.sm_idx if fi is None else self.sm_idx[fi]; w = self.sm_w if fi is None else self.sm_w[fi]
+        out = torch.zeros(c.shape[:-1] + idx.shape[:-1], device=c.device, dtype=c.dtype)
+        for k in range(4):
+            out += c[..., idx[..., k]] * w[..., k]
+        return out
 
     def normalise_coarse(self, coarse_ms: np.ndarray) -> torch.Tensor:
         c = torch.as_tensor(np.asarray(coarse_ms, np.float32), device=self.device)   # (n_int+1, C, npix_c)
@@ -106,7 +122,7 @@ class HpxFineSampler:
         """Linear-in-time interpolation of the coarse frames, lifted: ``(τ, C, npix)`` normalised."""
         prev, nxt = coarse_n[self.q], coarse_n[self.q + 1]                                # (τ, C, npix_c)
         lin = (1 - self.w)[:, None, None] * prev + self.w[:, None, None] * nxt
-        return self.lift(lin)
+        return self.lift_cond(lin)
 
     def tfeat(self, hours: np.ndarray) -> torch.Tensor:
         tf = np.concatenate([time_features(np.asarray(hours)), self.w.cpu().numpy()[:, None]], axis=1)
@@ -127,10 +143,10 @@ class HpxFineSampler:
         out = torch.zeros(tau * C, npix, device=self.device)
         rflat = r.reshape(tau * C, npix)
         for a in range(0, self.n_patches, self.batch):
-            fi, ci, wn = self.fidx[a:a + self.batch], self.cidx[a:a + self.batch], self.win[a:a + self.batch]
+            fi, wn = self.fidx[a:a + self.batch], self.win[a:a + self.batch]
             b = fi.shape[0]
             xp = rflat[:, fi.reshape(-1)].reshape(tau, C, b, *fi.shape[1:]).permute(2, 0, 1, 3, 4)          # (b, τ, C, P, P)
-            cc = coarse_n[:, :, ci.reshape(-1)].reshape(coarse_n.shape[0], C, b, *fi.shape[1:]).permute(2, 0, 1, 3, 4)  # (b, n_int+1, C, P, P)
+            cc = self.lift_cond(coarse_n, fi).permute(2, 0, 1, 3, 4)                                          # (b, n_int+1, C, P, P)
             prev, nxt = cc[:, self.q], cc[:, self.q + 1]                                                    # (b, τ, C, P, P)
             lin = (1 - self.w)[None, :, None, None, None] * prev + self.w[None, :, None, None, None] * nxt
             cond = torch.cat([lin, prev, nxt], dim=2)                                                       # (b, τ, 3C, P, P)

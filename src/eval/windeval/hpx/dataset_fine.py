@@ -27,7 +27,7 @@ from torch.utils.data import Dataset
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dataset import _runs, time_features, valid_rows  # noqa: E402
 from layout import FaceLayout, coord_channels  # noqa: E402
-from patches import PatchGeometry  # noqa: E402
+from patches import PatchGeometry, SmoothLift  # noqa: E402
 
 
 def _open(path: str | Path):
@@ -62,12 +62,17 @@ class HpxFineRuns(Dataset):
     def __init__(self, store: str | Path, layout_dir: str | Path, *, stats: dict, starts: np.ndarray,
                  n_frames: int = 13, coarse_stride: int = 6, patch: int = 64, pad: int = 32,
                  patches_per_item: int = 16, scale: np.ndarray | None = None, length: int = 10_000,
-                 seed: int = 0) -> None:
+                 seed: int = 0, lift: str = "nearest") -> None:
+        """``lift``: 'nearest' (blocky; block_mean(lift(c)) = c) or 'bilinear' (smooth on the sphere)."""
         self.store = str(Path(store).expanduser())
         self.fine, self.coarse, self.hours = _open(self.store)
         self.C, npix = self.fine.shape[1:]
         self.nside = int(round((npix / 12) ** 0.5)); self.nside_c = int(round((self.coarse.shape[-1] / 12) ** 0.5))
         self.geom = PatchGeometry(self.nside, self.nside_c, patch=patch, pad=pad, cache_dir=layout_dir)
+        if lift not in ("nearest", "bilinear"):
+            raise ValueError(f"lift must be 'nearest' or 'bilinear', got {lift!r}")
+        self.lift_mode = lift
+        self.smooth = SmoothLift(self.nside, self.nside_c, layout_dir) if lift == "bilinear" else None
         layout = FaceLayout.load(self.nside, layout_dir)
         self.coords = layout.from_faces(coord_channels(self.nside, layout.perm)).astype(np.float32)   # (3, npix) NEST
         self.mean = np.asarray(stats["mean"], np.float32)[:, None, None]; self.std = np.asarray(stats["std"], np.float32)[:, None, None]
@@ -91,9 +96,12 @@ class HpxFineRuns(Dataset):
         return fine, coarse
 
     def cut(self, fine: np.ndarray, coarse: np.ndarray, face: int, i: int, j: int, *, scaled: bool = True):
-        fi = self.geom.fine_index(face, i, j); ci = fi // (self.geom.ratio ** 2)
+        fi = self.geom.fine_index(face, i, j)
         x = (fine[:, :, fi].astype(np.float32) - self.mean) / self.std                    # (τ, C, P, P)
-        cc = (coarse[:, :, ci] - self.mean) / self.std                                    # (n_int+1, C, P, P) lifted
+        if self.smooth is None:
+            cc = (coarse[:, :, fi // (self.geom.ratio ** 2)] - self.mean) / self.std       # (n_int+1, C, P, P) nearest lift
+        else:
+            cc = (self.smooth.gather(coarse, fi) - self.mean) / self.std                   # bilinear on the sphere
         q, w = self._frame_weights()
         prev, nxt = cc[q], cc[q + 1]                                                      # (τ, C, P, P)
         lin = (1.0 - w)[:, None, None, None] * prev + w[:, None, None, None] * nxt
