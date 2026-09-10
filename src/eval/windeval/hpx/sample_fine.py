@@ -166,7 +166,7 @@ class HpxFineSampler:
             D = D.float() * wn[:, None, None]                                                               # window
             out.index_add_(1, fi.reshape(-1), D.permute(1, 2, 0, 3, 4).reshape(tau * C, -1))
         out = (out / self.wsum).reshape(tau, C, npix)
-        return self.project(out)
+        return self.project(out, coarse_n)
 
     @torch.no_grad()
     def heun(self, r: torch.Tensor, coarse_n: torch.Tensor, tfeat: torch.Tensor, *, unit_noise: bool = True,
