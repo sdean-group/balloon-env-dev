@@ -128,11 +128,15 @@ class HpxFineSampler:
         tf = np.concatenate([time_features(np.asarray(hours)), self.w.cpu().numpy()[:, None]], axis=1)
         return torch.from_numpy(tf.astype(np.float32)).to(self.device)                   # (τ, 7)
 
-    def project(self, r: torch.Tensor) -> torch.Tensor:
-        """Zero the block means of the residual at the coarse hours (frames 0, 6, 12)."""
-        r = r.clone()
-        for f in range(0, self.tau, self.coarse_stride):
-            r[f] = r[f] - self.lift(self.block_mean(r[f]))
+    def project(self, r: torch.Tensor, coarse_n: torch.Tensor) -> torch.Tensor:
+        """Exact block-mean consistency at the coarse hours (frames 0, 6, 12): set the residual's
+        block means to what makes block_mean(baseline + scale * r) == coarse. With the nearest lift
+        the target is zero; with the bilinear lift it is (coarse - block_mean(baseline)) / scale,
+        which the model has learned to produce -- zeroing it there was the 2026-09-10 bug."""
+        r = r.clone(); base = self.baseline(coarse_n)
+        for k, f in enumerate(range(0, self.tau, self.coarse_stride)):
+            target = (coarse_n[k] - self.block_mean(base[f])) / self.scale                # (C, npix_c)
+            r[f] = r[f] - self.lift(self.block_mean(r[f]) - target)
         return r
 
     # ---- one denoiser evaluation over the sphere ------------------------------------
@@ -180,7 +184,7 @@ class HpxFineSampler:
             r = r_next
             if log is not None and (i % 6 == 0 or i == self.num_steps - 1):
                 log(f"[sample] step {i + 1}/{self.num_steps} sigma {float(s_cur):.3f}")
-        return self.project(r)
+        return self.project(r, coarse_n)
 
     @torch.no_grad()
     def sample_block(self, coarse_ms: np.ndarray, hours: np.ndarray, *, seed: int = 0, log=print) -> np.ndarray:
