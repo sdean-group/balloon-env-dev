@@ -51,6 +51,7 @@ def regrid(x):                                                        # (τ, C, 
             out[f, c // 2, c % 2] = hp.get_interp_val(m, GLON, GLAT, lonlat=True)    # channels interleave (u_l, v_l)
     return out
 blocks, times, month, day, hour, seed_idx = [], [], [], [], [], []
+s1_cache = {}
 t_all = time.time()
 for i, (m, d, h) in enumerate(conds):
     t0 = np.datetime64(f"2023-{m:02d}-{d:02d}T{h:02d}", "h"); h0 = int((t0 - np.datetime64("1900-01-01T00", "h")) / np.timedelta64(1, "h"))
@@ -58,8 +59,15 @@ for i, (m, d, h) in enumerate(conds):
     for s in range(a.seeds):
         seed = i * a.seeds + s; t1 = time.time()
         if a.mode == "stage1":
-            mk = (sh >= h0 - 720) & (sh < h0); sv = float(su[mk].mean()) if mk.sum() >= 360 else None
-            cf = s1.sample_block(h0 + 6 * np.arange(8), seed=seed, slow_value=sv)[:3]
+            # one Stage 1 block per (month, day, seed), starting 00 UTC and spanning 48 h, drives both the
+            # 00 and the 12 UTC condition of that day (frames 0/6/12 h and 12/18/24 h). Independent draws
+            # per condition made the day's two 13-hour blocks disagree at their shared hour, which the
+            # temporal rows read as a jump (SR_time 3.08 vs 0.40 with ERA5 frames; 2026-09-11).
+            key = (m, d, s)
+            if key not in s1_cache:
+                hd = h0 - h; mk = (sh >= hd - 720) & (sh < hd); sv = float(su[mk].mean()) if mk.sum() >= 360 else None
+                s1_cache[key] = s1.sample_block(hd + 6 * np.arange(8), seed=i * a.seeds + s, slow_value=sv)
+            cf = s1_cache[key][h // 6: h // 6 + 3]
         else:
             cf = np.stack([coarse_at(h0 + 6 * k) for k in range(3)]).astype(np.float32)
         gen = s2.sample_block(cf, hs, seed=1000 + seed, log=None)
