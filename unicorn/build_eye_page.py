@@ -116,21 +116,21 @@ td.num, th.num { text-align: right; font-family: "IBM Plex Mono", ui-monospace, 
 
   <section>
     <h2>What the gate measured for this model</h2>
-    <p class="note">Stage 2 at 200k steps, scored on four held-out 13-hour blocks (one per season) with Stage 1 supplying the coarse field, which is how the simulator will use it. Rows that pair u with v are being recomputed after a channel-labelling fix and are omitted here; the benchmark table in the meeting notes has the corrected values.</p>
+    <p class="note">The smooth-baseline Stage 2 at 200k steps (the model of record), scored on four held-out 13-hour blocks (one per season) with Stage 1 supplying the coarse field, which is how the simulator will use it.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>quantity</th><th class="num">ERA5 / floor</th><th class="num">generated</th></tr></thead>
         <tbody>
           <tr><td>spectrum, coarse band (l 10&ndash;96), log ratio</td><td class="num">&plusmn;0.12</td><td class="num">+0.01</td></tr>
-          <tr><td>spectrum, 160&ndash;400 km band, log ratio</td><td class="num">&plusmn;0.08</td><td class="num">&minus;0.07</td></tr>
-          <tr><td>fine-scale residual, RMS (m/s)</td><td class="num">1.11</td><td class="num">1.10</td></tr>
-          <tr><td>residual persistence, 1 / 3 / 6 h correlation</td><td class="num">0.91 / 0.64 / 0.45</td><td class="num">0.92 / 0.63 / 0.45</td></tr>
-          <tr><td>jump across face edges, relative to ERA5</td><td class="num">1.00</td><td class="num">1.21</td></tr>
+          <tr><td>spectrum, 160&ndash;400 km band, log ratio</td><td class="num">&plusmn;0.08</td><td class="num">&minus;0.13</td></tr>
+          <tr><td>fine-scale residual, RMS (m/s)</td><td class="num">1.11</td><td class="num">1.07</td></tr>
+          <tr><td>residual persistence, 1 / 3 / 6 h correlation</td><td class="num">0.91 / 0.64 / 0.45</td><td class="num">0.91 / 0.63 / 0.43</td></tr>
+          <tr><td>jump across face edges, relative to ERA5</td><td class="num">1.00</td><td class="num">1.02</td></tr>
           <tr><td>block means equal the coarse field</td><td class="num">exact</td><td class="num">exact</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">The maps on this page are from the first Stage 2 (nearest-neighbour baseline), whose one artefact is a faint grid at the coarse-cell spacing (the face-edge row). The smooth-baseline retrain that removes it is now the model of record; this page will be regenerated from it.</p>
+    <p class="note">Distribution rows (W1, extremes, opposing winds between levels) are in the benchmark table of the meeting notes, computed by the summer benchmark suite on its NE Pacific window.</p>
   </section>
 </main>
 <script>
