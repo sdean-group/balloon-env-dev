@@ -11,6 +11,7 @@ sys.path.insert(0, "src/eval/windeval/hpx")
 ap = argparse.ArgumentParser()
 ap.add_argument("--fields", default="/scratch/sps252/runs/eye_jul10/fields.npz"); ap.add_argument("--out", required=True)
 ap.add_argument("--stage1", default="/home/sps252/data/models/stage1_hpx32_ft/step_60000.pt")
+ap.add_argument("--skip-seasons", action="store_true")
 a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
 plt.rcParams.update({"font.size": 11, "axes.titlesize": 12, "axes.titleweight": "semibold", "figure.dpi": 150})
 NS, NSC = 256, 32
@@ -20,7 +21,7 @@ row = {int(h): i for i, h in enumerate(hours)}
 era = np.stack([root["fine/uv"][row[int(h)]] for h in hs]).astype(np.float32)
 LON, LAT = np.meshgrid(np.arange(-180, 180, 0.5), np.arange(-89.75, 90, 0.5))
 def grid(m, lon=LON, lat=LAT): return hp.get_interp_val(hp.reorder(m.astype(np.float64), n2r=True), lon, lat, lonlat=True)
-def spd(x, l=0): return np.sqrt(x[l] ** 2 + x[l + 18] ** 2)
+def spd(x, l=0): return np.sqrt(x[2 * l] ** 2 + x[2 * l + 1] ** 2)     # channels interleave (u_l, v_l)
 def globe(ax, img, title, vmax, cmap="viridis", vmin=0):
     im = ax.imshow(img, origin="lower", extent=(-180, 180, -90, 90), cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", interpolation="nearest")
     for y in (-60, -30, 0, 30, 60): ax.axhline(y, color="w", lw=0.4, alpha=0.5)
@@ -32,11 +33,11 @@ vm = float(np.percentile(spd(era[6]), 99.5))
 # ---- Figure 1: coarse -> fine, one hour, one level
 fig, axs = plt.subplots(1, 3, figsize=(16, 4.2))
 lift = np.repeat(c1[1], 64, axis=-1)
-globe(axs[0], grid(spd(lift)), "1. Stage 1 draws the weather at 1.8 degrees", vm)
-globe(axs[1], grid(spd(gen_b[6])), "2. Stage 2 adds the detail at 0.23 degrees", vm)
+globe(axs[0], grid(spd(lift)), "1. Stage 1: the weather at 1.8 deg", vm)
+globe(axs[1], grid(spd(gen_b[6])), "2. Stage 2: detail added at 0.23 deg", vm)
 ZLON, ZLAT = np.meshgrid(np.arange(0, 50, 0.2), np.arange(-70, -30, 0.2))
 im = axs[2].imshow(grid(spd(gen_b[6]), ZLON, ZLAT), origin="lower", extent=(0, 50, -70, -30), cmap="viridis", vmin=0, vmax=vm, aspect="auto")
-axs[2].set_title("3. Native resolution over the southern ocean"); axs[2].tick_params(labelsize=8)
+axs[2].set_title("3. Zoom on the box, native resolution"); axs[2].tick_params(labelsize=8)
 axs[1].add_patch(plt.Rectangle((0, -70), 50, 40, fill=False, ec="white", lw=1.2))
 fig.colorbar(im, ax=axs, shrink=0.85, pad=0.01, label="wind speed at 53 hPa (m/s)")
 fig.suptitle("Generated winds for 10 July 2023, 06 UTC: one seed, whole globe, 18 levels", y=1.02, fontsize=13)
@@ -73,6 +74,8 @@ fig.suptitle("Hourly evolution: Stage 1 fixes hours 0, 6, 12; Stage 2 generates 
 fig.savefig(os.path.join(a.out, "fig4_13_hours.png"), bbox_inches="tight"); plt.close(fig)
 
 # ---- Figure 5: the seasons -- zonal-mean u by latitude, ERA5 vs generated, four months
+if a.skip_seasons:
+    print("done", flush=True); sys.exit(0)
 from sample import HpxSampler
 from eval_coarse import _band_means, _slow_series
 s1 = HpxSampler(a.stage1, os.path.expanduser("~/data/hpx_layout"), num_steps=18, device="cuda")

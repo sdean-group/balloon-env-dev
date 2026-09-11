@@ -48,7 +48,7 @@ def grid(m_nest, ns, lon, lat):
     return hp.get_interp_val(hp.reorder(m_nest.astype(np.float64), n2r=True), lon, lat, lonlat=True, nest=False) if False else \
            hp.get_interp_val(hp.reorder(m_nest.astype(np.float64), n2r=True), lon, lat, lonlat=True)
 def speed(x, ui, vi): return np.sqrt(x[ui] ** 2 + x[vi] ** 2)
-levels = {"top_53hPa": (0, 18), "bottom_134hPa": (17, 35)}
+levels = {"top_53hPa": (0, 1), "bottom_134hPa": (34, 35)}      # channels interleave (u_l, v_l)
 vmax = {k: float(np.percentile(speed(era[6], *v), 99.5)) for k, v in levels.items()}
 def panel(ax, img, title, vm, extent):
     im = ax.imshow(img, origin="lower", extent=extent, cmap="viridis", vmin=0, vmax=vm, aspect="auto", interpolation="nearest")

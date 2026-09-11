@@ -48,7 +48,7 @@ def regrid(x):                                                        # (τ, C, 
     for f in range(tau):
         for c in range(C):
             m = hp.reorder(x[f, c].astype(np.float64), n2r=True)
-            out[f, c % L, c // L] = hp.get_interp_val(m, GLON, GLAT, lonlat=True)
+            out[f, c // 2, c % 2] = hp.get_interp_val(m, GLON, GLAT, lonlat=True)    # channels interleave (u_l, v_l)
     return out
 blocks, times, month, day, hour, seed_idx = [], [], [], [], [], []
 t_all = time.time()

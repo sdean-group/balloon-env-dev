@@ -49,7 +49,7 @@ def _spectra(x: np.ndarray, lmax: int) -> np.ndarray:
 def _opposing(x: np.ndarray, sub: np.ndarray, n_levels: int = 18) -> float:
     """x: (C, npix) with channels [u_1..u_L, v_1..v_L]. Fraction of columns (on the pixel subset) that
     hold a pair of levels whose winds oppose by > 90 deg with both speeds >= 5 m/s."""
-    u, v = x[:n_levels][:, sub], x[n_levels:][:, sub]                      # (L, n)
+    u, v = x[0::2][:, sub], x[1::2][:, sub]                                # (L, n); channels interleave (u_l, v_l)
     spd = np.sqrt(u * u + v * v)
     dot = np.einsum("in,jn->ijn", u, u) + np.einsum("in,jn->ijn", v, v)     # (L, L, n)
     ok = (spd[:, None, :] >= 5.0) & (spd[None, :, :] >= 5.0)
@@ -141,9 +141,9 @@ def evaluate(ckpt: str, heldout: str, layout: str, *, blocks_per_month: int, out
             for name, x in (("gen", gen[f]), ("era", era[f])):
                 e, i = _seam(x[0], s.geom.pidx, s.geom.pad)
                 acc[f"seam_edge_{name}"].append(e); acc[f"seam_inner_{name}"].append(i)
-        acc["u_gen"].append(gen[:, :L][:, :, sub].ravel()); acc["u_era"].append(era[:, :L][:, :, sub].ravel())
-        acc["v_gen"].append(gen[:, L:][:, :, sub].ravel()); acc["v_era"].append(era[:, L:][:, :, sub].ravel())
-        spd_g = np.sqrt(gen[:, :L] ** 2 + gen[:, L:] ** 2)[:, :, sub]; spd_e = np.sqrt(era[:, :L] ** 2 + era[:, L:] ** 2)[:, :, sub]
+        acc["u_gen"].append(gen[:, 0::2][:, :, sub].ravel()); acc["u_era"].append(era[:, 0::2][:, :, sub].ravel())
+        acc["v_gen"].append(gen[:, 1::2][:, :, sub].ravel()); acc["v_era"].append(era[:, 1::2][:, :, sub].ravel())
+        spd_g = np.sqrt(gen[:, 0::2] ** 2 + gen[:, 1::2] ** 2)[:, :, sub]; spd_e = np.sqrt(era[:, 0::2] ** 2 + era[:, 1::2] ** 2)[:, :, sub]
         acc["p999_gen"].append(float(np.percentile(spd_g, 99.9))); acc["p999_era"].append(float(np.percentile(spd_e, 99.9)))
 
     # ---- aggregate
