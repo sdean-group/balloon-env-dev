@@ -125,12 +125,15 @@ td.num, th.num { text-align: right; font-family: "IBM Plex Mono", ui-monospace, 
           <tr><td>spectrum, 160&ndash;400 km band, log ratio</td><td class="num">&plusmn;0.08</td><td class="num">&minus;0.13</td></tr>
           <tr><td>fine-scale residual, RMS (m/s)</td><td class="num">1.11</td><td class="num">1.07</td></tr>
           <tr><td>residual persistence, 1 / 3 / 6 h correlation</td><td class="num">0.91 / 0.64 / 0.45</td><td class="num">0.91 / 0.63 / 0.43</td></tr>
+          <tr><td>W1 distance of u / v (m/s), floor 2.78</td><td class="num">&mdash;</td><td class="num">0.56 / 0.12</td></tr>
+          <tr><td>99.9th percentile wind speed (m/s)</td><td class="num">62.6</td><td class="num">60.1</td></tr>
+          <tr><td>columns with opposing winds between levels</td><td class="num">30.0%</td><td class="num">31.3%</td></tr>
           <tr><td>jump across face edges, relative to ERA5</td><td class="num">1.00</td><td class="num">1.02</td></tr>
           <tr><td>block means equal the coarse field</td><td class="num">exact</td><td class="num">exact</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">Distribution rows (W1, extremes, opposing winds between levels) are in the benchmark table of the meeting notes, computed by the summer benchmark suite on its NE Pacific window.</p>
+    <p class="note">The poster-style benchmark (summer suite on its NE Pacific window) is in the meeting notes.</p>
   </section>
 </main>
 <script>
