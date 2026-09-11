@@ -41,7 +41,8 @@ class HpxFineSampler:
     def __init__(self, ckpt_path: str | Path, layout_dir: str | Path, *, num_steps: int = 18, device: str = "cuda",
                  use_ema: bool = True, sigma_max: float | None = None, batch_patches: int = 32, stride: int | None = None,
                  window_beta: float = 6.0, guidance: float = 1.0, amp: bool = True,
-                 sigma_min: float | None = None) -> None:
+                 sigma_min: float | None = None, region: tuple[float, float, float, float] | None = None,
+                 region_margin_deg: float = 6.0) -> None:
         """``sigma_min``/``sigma_max`` override the schedule ends (default: the network's; note the
         training floor ``train_sigma_min`` -- stepping below it asks the net to denoise where it was
         never trained, which leaves pixel-scale noise in the output)."""
@@ -86,11 +87,28 @@ class HpxFineSampler:
             sm = SmoothLift(self.nside, self.nside_c, layout_dir)
             self.sm_idx = torch.from_numpy(sm.idx).to(self.device)            # (npix, 4)
             self.sm_w = torch.from_numpy(sm.w).to(self.device)                # (npix, 4)
+        # optional regional sampling: only patches that touch the box (lat0, lat1, lon0, lon1) expanded
+        # by a margin are denoised; everything else stays noise and must be cropped by the caller.
+        # The blend normalisation counts only active patches, so the field is exact inside the box
+        # and degrades only in the outer half of the margin. ~30x cheaper for a 16-degree box.
+        self.region = region
+        if region is not None:
+            import healpy as hp
+            la0, la1, lo0, lo1 = region; m = region_margin_deg
+            lon_p, lat_p = hp.pix2ang(self.nside, fidx.reshape(-1), nest=True, lonlat=True)
+            lon_p = (lon_p - lo0) % 360.0                                  # box-relative longitude in [0, 360)
+            inside = (lat_p >= la0 - m) & (lat_p <= la1 + m) & ((lon_p <= (lo1 - lo0) % 360.0 + m) | (lon_p >= 360.0 - m))
+            active = inside.reshape(len(pos), -1).any(axis=1)
+            fidx, win, pos = fidx[active], win[active], [p for p, a in zip(pos, active) if a]
+            self.fidx = torch.from_numpy(fidx).to(self.device)
+            self.cidx = self.fidx // (self.geom.ratio ** 2)
         self.win = torch.from_numpy(win.astype(np.float32)).to(self.device)
         wsum = torch.zeros(12 * self.nside * self.nside, device=self.device)
         wsum.index_add_(0, self.fidx.flatten(), self.win.flatten())
-        assert float(wsum.min()) > 0, "some fine pixel receives no patch"
-        self.wsum = wsum
+        if region is None:
+            assert float(wsum.min()) > 0, "some fine pixel receives no patch"
+        self.wsum = torch.where(wsum > 0, wsum, torch.ones_like(wsum))     # untouched pixels keep their state
+        self.covered = (wsum > 0)
         self.n_patches = len(pos)
         q = np.minimum(np.arange(self.tau) // self.coarse_stride, self.n_int - 1)
         self.q = torch.from_numpy(q).to(self.device)
@@ -166,6 +184,8 @@ class HpxFineSampler:
             D = D.float() * wn[:, None, None]                                                               # window
             out.index_add_(1, fi.reshape(-1), D.permute(1, 2, 0, 3, 4).reshape(tau * C, -1))
         out = (out / self.wsum).reshape(tau, C, npix)
+        if self.region is not None:
+            out = torch.where(self.covered, out, r)                        # outside the region: unchanged
         return self.project(out, coarse_n)
 
     @torch.no_grad()
