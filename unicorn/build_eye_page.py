@@ -116,7 +116,7 @@ td.num, th.num { text-align: right; font-family: "IBM Plex Mono", ui-monospace, 
 
   <section>
     <h2>What the gate measured for this model</h2>
-    <p class="note">Stage 2 at 200k steps, scored on four held-out 13-hour blocks (one per season) with Stage 1 supplying the coarse field, which is how the simulator will use it.</p>
+    <p class="note">Stage 2 at 200k steps, scored on four held-out 13-hour blocks (one per season) with Stage 1 supplying the coarse field, which is how the simulator will use it. Rows that pair u with v are being recomputed after a channel-labelling fix and are omitted here; the benchmark table in the meeting notes has the corrected values.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>quantity</th><th class="num">ERA5 / floor</th><th class="num">generated</th></tr></thead>
@@ -125,15 +125,12 @@ td.num, th.num { text-align: right; font-family: "IBM Plex Mono", ui-monospace, 
           <tr><td>spectrum, 160&ndash;400 km band, log ratio</td><td class="num">&plusmn;0.08</td><td class="num">&minus;0.07</td></tr>
           <tr><td>fine-scale residual, RMS (m/s)</td><td class="num">1.11</td><td class="num">1.10</td></tr>
           <tr><td>residual persistence, 1 / 3 / 6 h correlation</td><td class="num">0.91 / 0.64 / 0.45</td><td class="num">0.92 / 0.63 / 0.45</td></tr>
-          <tr><td>W1 distance of u / v (m/s), floor 1.83</td><td class="num">&mdash;</td><td class="num">0.43 / 0.23</td></tr>
-          <tr><td>99.9th percentile wind speed (m/s)</td><td class="num">74.5</td><td class="num">73.5</td></tr>
-          <tr><td>columns with opposing winds between levels</td><td class="num">57.6%</td><td class="num">58.5%</td></tr>
           <tr><td>jump across face edges, relative to ERA5</td><td class="num">1.00</td><td class="num">1.21</td></tr>
           <tr><td>block means equal the coarse field</td><td class="num">exact</td><td class="num">exact</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">The face-edge row is the one known artefact: a faint grid at the coarse-cell spacing, being removed by the smooth-lift retrain now running.</p>
+    <p class="note">The maps on this page are from the first Stage 2 (nearest-neighbour baseline), whose one artefact is a faint grid at the coarse-cell spacing (the face-edge row). The smooth-baseline retrain that removes it is now the model of record; this page will be regenerated from it.</p>
   </section>
 </main>
 <script>
