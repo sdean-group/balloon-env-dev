@@ -32,6 +32,11 @@ d0, d1 = (int(v) for v in a.days.split("-")); days = list(range(d0, d1 + 1))
 conds = [(m, d, h) for m in (1, 4, 7, 10) for h in (0, 12) for d in days]
 root = zarr.open_group("/scratch/sps252/era5_hpx_heldout_2023", mode="r"); hours = np.asarray(root["time"][:], dtype=np.int64)
 row = {int(h): i for i, h in enumerate(hours)}
+train = zarr.open_group("/scratch/sps252/era5_hpx", mode="r"); trow = {int(h): i for i, h in enumerate(np.asarray(train["time"][:], dtype=np.int64))}
+def coarse_at(h):
+    """Coarse frame from the held-out store, else from the training store (the 12 UTC condition on
+    day 14 needs the frame at day 15 00:00, which is a training day). Only ever a conditioner."""
+    return root["coarse/uv"][row[h]] if h in row else train["coarse/uv"][trow[h]]
 s2 = HpxFineSampler(a.stage2, lay, num_steps=18, device="cuda", batch_patches=48, region=REGION)
 print(f"regional sampler: {s2.n_patches} active patches; window {REGION}", flush=True)
 s1 = sh = su = None
@@ -56,7 +61,7 @@ for i, (m, d, h) in enumerate(conds):
             mk = (sh >= h0 - 720) & (sh < h0); sv = float(su[mk].mean()) if mk.sum() >= 360 else None
             cf = s1.sample_block(h0 + 6 * np.arange(8), seed=seed, slow_value=sv)[:3]
         else:
-            cf = np.stack([root["coarse/uv"][row[h0 + 6 * k]] for k in range(3)]).astype(np.float32)
+            cf = np.stack([coarse_at(h0 + 6 * k) for k in range(3)]).astype(np.float32)
         gen = s2.sample_block(cf, hs, seed=1000 + seed, log=None)
         blocks.append(regrid(gen)); times.append(ts); month.append(m); day.append(d); hour.append(h); seed_idx.append(s)
         print(f"[bench] {a.mode} block {i * a.seeds + s + 1}/{len(conds) * a.seeds} (2023-{m:02d}-{d:02d} {h:02d}h seed {s}) {time.time() - t1:.0f}s", flush=True)
