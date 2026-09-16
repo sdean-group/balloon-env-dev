@@ -38,3 +38,21 @@ in `/usr/local/slurm/current/bin` (not on the non-interactive PATH).
 - `summarize_stage1_evals.py <run dir>` — one markdown table over the run's `eval_*` dirs.
 - `jet_by_month.py --ckpt ... [--churn C --steps N --sigma-max S]` — per-month zonal-mean u
   profiles vs held-out ERA5 (the diagnostic that exposed the seasonal blindness).
+
+## Stage 2 (fine residual patch model)
+
+- `train_stage2.sbatch` + `configs/stage2_hpx256_bl.yaml` (model of record: smooth bilinear baseline) and
+  `configs/stage2_hpx256.yaml` (nearest-lift ablation). Trainer `hpx/train_fine.py`, data `hpx/dataset_fine.py`,
+  geometry `hpx/patches.py`, sampler `hpx/sample_fine.py` (MultiDiffusion over the padded faces; `region=` for
+  local queries), gate `hpx/eval_fine.py` (`--stage1` conditions on Stage 1 samples).
+- Diagnostics that found this cycle's defects: `residual_timescales.py`, `bench_stage2_tau.py`, `stage2_diag.py`,
+  `seam_diag.py`, `block_edge_diag.py`.
+
+## Benchmark v2 (the poster table) and figures
+
+- `benchmark_hpx_blocks.py --mode stage1|era5` generates the model's blocks at the summer conditions on the summer's
+  NE Pacific window (summer cache format); `benchmark_hpx_era5ref.py` does the same for ERA5 itself (the grid floor);
+  `benchmark_hpx_score.py` scores them locally with the summer suite next to the poster's rows.
+- `eye_test.py` (+ `--render-only`), `build_eye_page.py` (the scrubbable page), `showcase_figs.py` (five meeting figures).
+
+Channels in every store interleave (u_l, v_l): index 2l is u, 2l+1 is v.
